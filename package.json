@@ -1,0 +1,84 @@
+{
+  "name": "@clawnify/agent-permissions",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin — permission and approval engine. Gates built-in tool calls (bash, file edit, etc.) and plugin tools via a three-bucket policy (allow/deny/ask) with wildcard rules, rule sources (session/workspace/user/config), and in-chat approval. No network calls.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./api": {
+      "import": "./dist/api/resolver.js",
+      "types": "./dist/api/types.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.5.2",
+      "minGatewayVersion": ">=2026.5.12"
+    },
+    "build": {
+      "openclawVersion": "2026.5.12"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts.map",
+    "index.ts",
+    "src/**/*.ts",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "permissions",
+    "approvals",
+    "policy",
+    "in-chat",
+    "approval-gate",
+    "ai-agents"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.5.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clawnify/agent-permissions.git"
+  },
+  "homepage": "https://github.com/clawnify/agent-permissions#readme",
+  "bugs": {
+    "url": "https://github.com/clawnify/agent-permissions/issues"
+  }
+}

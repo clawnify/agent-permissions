@@ -1,0 +1,49 @@
+{
+  "id": "agent-permissions",
+  "name": "Agent Permissions",
+  "description": "Permission and approval engine for OpenClaw agents. Any plugin can register per-tool resolvers; this engine walks rule sources (session/local/user/config), applies the three-bucket policy (allow/deny/ask), and surfaces in-chat approval via OpenClaw's requireApproval mechanism. Works with built-in tools (bash, file edit, etc.) and any plugin-registered tool. No network dependency.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "defaultMode": {
+        "type": "string",
+        "enum": ["default", "acceptEdits", "bypassPermissions", "dontAsk"],
+        "default": "default",
+        "description": "Global session disposition. 'default' = ask on anything not allow-listed. 'bypassPermissions' = allow everything except hard denies. Mode layers on top of rules."
+      },
+      "allow": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Rule strings in the form 'ToolName' or 'ToolName(content)'. Content supports exact match, legacy prefix 'foo:*', and wildcard 'foo *'."
+      },
+      "deny": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "ask": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "dangerousPatterns": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Prefixes that may match allow rules but can never be allow-always-persisted. Defaults to the built-in list (python/node/eval/curl/wget/ssh/sudo/…). Override here to extend or replace."
+      },
+      "userRulesPath": {
+        "type": "string",
+        "description": "Defaults to ~/.openclaw/permissions.json. Persisted user-scope allow-always rules live here."
+      },
+      "localRulesPath": {
+        "type": "string",
+        "description": "Defaults to .openclaw/permissions.json in CWD. Persisted workspace-scope allow-always rules live here."
+      },
+      "approvalTimeoutMs": {
+        "type": "number",
+        "default": 540000,
+        "description": "How long to wait for an in-chat approval response (ms). Capped by the gateway."
+      }
+    }
+  }
+}
