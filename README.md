@@ -206,3 +206,7 @@ Tag a release on GitHub → `.github/workflows/publish.yml` runs `npm publish --
 ## License
 
 MIT.
+
+---
+
+Initiated and maintained by the [Clawnify](https://www.clawnify.com) team — AI agent hosting and orchestration.
