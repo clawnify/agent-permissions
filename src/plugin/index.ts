@@ -14,6 +14,7 @@ import type {
   AgentPermissionsApi,
   AllowAlwaysEvent,
   AllowAlwaysListener,
+  GateRequest,
   ResolveFn,
   ResolverRegistration,
 } from "../api/types.js";
@@ -101,6 +102,52 @@ interface PluginConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Generic GateRequest builder for tools without a registered resolver.
+// ---------------------------------------------------------------------------
+//
+// Resolverless mode is the default — operators add rules in openclaw.json
+// that target tool names; the engine evaluates without any consumer plugin
+// needing to call registerResolver. The generic builder pulls a meaningful
+// ruleContent so wildcard rules can match (e.g. `Bash(curl *)` matches the
+// actual shell command) and generates a JSON-preview prompt.
+
+function previewJson(value: unknown, max = 600): string {
+  try {
+    return JSON.stringify(value ?? {}, null, 2).slice(0, max);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function buildGenericGateRequest(
+  toolName: string,
+  params: Record<string, unknown>,
+): GateRequest {
+  // Shell-like tools: pull the actual command into ruleContent so wildcard
+  // rules can match it (e.g. `Bash(curl *)` against `curl https://foo`).
+  // OpenClaw's built-in shell tool surfaces as `bash` in some paths and
+  // `exec` in others; cover both.
+  if (toolName === "bash" || toolName === "exec") {
+    const cmd =
+      typeof params.command === "string" ? params.command.trim() : "";
+    if (cmd) {
+      return {
+        ruleContent: cmd,
+        title: "Run shell command?",
+        description: "```bash\n" + cmd.slice(0, 600) + "\n```",
+      };
+    }
+  }
+
+  // Default: tool-wide rule matching (ruleContent undefined → only `Tool`
+  // or `Tool(*)` rules apply) + a generic JSON-preview prompt.
+  return {
+    title: "Run `" + toolName + "`?",
+    description: "Params: ```json\n" + previewJson(params) + "\n```",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Plugin default export — openclaw's loader calls register(api).
 // ---------------------------------------------------------------------------
 
@@ -178,12 +225,23 @@ function register(api: PluginApi): void {
     "before_tool_call",
     async (event: BeforeToolCallEvent): Promise<BeforeToolCallResult | undefined> => {
       try {
-        const resolve = resolvers.get(event.toolName);
-        if (!resolve) return undefined; // no resolver registered → not gated
-
         const params = (event.params as Record<string, unknown>) ?? {};
-        const req = resolve(params);
-        if (!req) return undefined; // resolver opted out
+
+        // Build a GateRequest for the call. If a resolver was registered
+        // for this toolName we use its rich prompt; otherwise fall back to
+        // a generic extractor (bash command for shell tools, JSON-preview
+        // for everything else). Resolverless mode is the default — it
+        // makes agent-permissions usable by any plugin's tools without
+        // requiring the consumer plugin to know about us.
+        const resolve = resolvers.get(event.toolName);
+        let req: GateRequest;
+        if (resolve) {
+          const resolved = resolve(params);
+          if (!resolved) return undefined; // resolver opted out
+          req = resolved;
+        } else {
+          req = buildGenericGateRequest(event.toolName, params);
+        }
 
         const decision = evaluatePolicy({
           toolName: event.toolName,

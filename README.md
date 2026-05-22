@@ -71,14 +71,22 @@ participate without each one rebuilding the policy / approval / learning loop.
 | Capability | How |
 |---|---|
 | Gates **any tool call** in the gateway | Single global `before_tool_call` hook at priority 100 (verified upstream sort direction in `src/plugins/hooks.ts:266`) |
-| Built-in tools (bash, edit, …) supported | Via consumer-registered resolvers — opt-in per tool |
-| Plugin tools supported | Consumer plugin calls `registerResolver({ toolName, resolve })` |
+| Built-in tools (bash, file edit, web fetch, …) supported out of the box | Generic resolver: shell tools (`bash`/`exec`) match against the actual command; everything else matches by tool name. No registration required. |
+| Other plugins' tools supported | Same generic path — operators add rules in `openclaw.json` targeting the tool name. Plugins don't need to know about us. |
+| Optional rich prompts | Consumer plugins MAY call `registerResolver({ toolName, resolve })` for tool-specific prompt titles/descriptions. Opt-in. |
 | Three-bucket policy | `allow` / `deny` / `ask` evaluated against rule sources in priority order |
 | In-chat approval | Uses OpenClaw's native `requireApproval` — same UI as exec approvals |
 | Learning | `allow-always` resolutions persist to user/local/session as configured |
 | Wildcard rules | `Tool(foo)` exact, `Tool(foo:*)` legacy prefix, `Tool(foo *)` new wildcard |
 | Dangerous-pattern denylist | Patterns like `python:*`, `node:*`, `eval` cannot be allow-always-persisted |
 | Fail-closed | OpenClaw's hook runner catches exceptions and fails open — this plugin wraps every code path in try/catch and returns `{ block: true }` instead |
+
+## Default modes
+
+- **`default`** (out of the box) — operator-opt-in: tools pass through unless an `ask` or `deny` rule explicitly matches. No surprises; you add rules for what you want gated.
+- **`strict`** — Claude-Code style: ask on anything not explicitly allowed. Opt-in for hard-gate setups.
+- **`bypassPermissions`** / **`dontAsk`** — allow everything except matching `deny` rules.
+- **`acceptEdits`** — currently behaves like `default`. Reserved for future tool-category-aware behavior (auto-allow edits within CWD).
 
 ## What it does NOT do
 

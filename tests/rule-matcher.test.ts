@@ -135,12 +135,23 @@ describe("evaluatePolicy", () => {
     assert.equal(decision.bucket, "ask");
   });
 
-  it("falls back to ask under default mode when nothing matches", () => {
+  it("falls back to allow under default mode when nothing matches (operator-opt-in semantic)", () => {
     const decision = evaluatePolicy({
       toolName: "Bash",
       ruleContent: "unknown",
       rules: makeRules({}),
       defaultMode: "default",
+    });
+    assert.equal(decision.bucket, "allow");
+    assert.equal(decision.matchedRule, undefined);
+  });
+
+  it("falls back to ask under strict mode when nothing matches", () => {
+    const decision = evaluatePolicy({
+      toolName: "Bash",
+      ruleContent: "unknown",
+      rules: makeRules({}),
+      defaultMode: "strict",
     });
     assert.equal(decision.bucket, "ask");
     assert.equal(decision.matchedRule, undefined);

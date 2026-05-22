@@ -40,7 +40,8 @@ export type DefaultMode =
   | "default"
   | "acceptEdits"
   | "bypassPermissions"
-  | "dontAsk";
+  | "dontAsk"
+  | "strict";
 
 const SOURCE_PRIORITY: RuleSource[] = ["session", "local", "user", "config"];
 
@@ -92,17 +93,21 @@ function decisionFor(
 
 function applyDefaultMode(mode: DefaultMode): PolicyDecision {
   switch (mode) {
+    case "strict":
+      // Ask on anything not explicitly allowed (Claude-Code-style). Opt-in
+      // for operators who want a hard gate around every tool call.
+      return { bucket: "ask", reason: "no rule match (strict mode)" };
     case "bypassPermissions":
     case "dontAsk":
       return { bucket: "allow", reason: `default mode '${mode}'` };
     case "acceptEdits":
-      // v1: acceptEdits behaves like default for unclassified tools. Later we
-      // can wire tool-category awareness (read-only / edit-CWD / network) so
-      // edits in CWD auto-allow while everything else asks.
-      return { bucket: "ask", reason: `default mode 'acceptEdits' (no rule match)` };
     case "default":
     default:
-      return { bucket: "ask", reason: "no rule match (default mode)" };
+      // Operator-opt-in semantic: out of the box, agent-permissions does
+      // nothing — tools pass through unless an `ask` or `deny` rule
+      // explicitly matches. Operators add rules for the tools they care
+      // about. Switch to "strict" to flip to ask-everything.
+      return { bucket: "allow", reason: "no rule match" };
   }
 }
 
