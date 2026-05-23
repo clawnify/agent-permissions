@@ -81,6 +81,44 @@ participate without each one rebuilding the policy / approval / learning loop.
 | Dangerous-pattern denylist | Patterns like `python:*`, `node:*`, `eval` cannot be allow-always-persisted |
 | Fail-closed | OpenClaw's hook runner catches exceptions and fails open — this plugin wraps every code path in try/catch and returns `{ block: true }` instead |
 
+## `allow-always` semantic — operator-scoped, transparent
+
+When a user clicks "always" on an approval prompt, the persisted rule is
+**the pattern of the rule that triggered the ask**, not the exact call.
+That means operators control the breadth at config time by choosing how
+specific their `ask` rules are:
+
+```jsonc
+"ask": ["clawnify_action(*_SEND*)"]   →  one "always" click allows ALL *_SEND* actions
+"ask": ["clawnify_action(GMAIL_*)"]   →  one "always" click allows ALL Gmail actions
+"ask": ["clawnify_action(GMAIL_SEND_EMAIL)"]  →  one "always" click allows only that slug
+```
+
+Each `ask` pattern → one possible "always" click → the rule is moved from
+`ask` to `allow` for future calls. Scales linearly with rule patterns,
+not with action count.
+
+The prompt description shows the rule that will be persisted, so there's
+no surprise broadening:
+
+```
+Run clawnify_action (GMAIL_SEND_EMAIL)?
+
+Params: {...}
+
+Matched: rule 'clawnify_action(*_SEND*)' from config settings
+
+'Always' will allow: `clawnify_action(*_SEND*)`
+```
+
+The `dangerousPatterns` denylist is checked against the rule that would
+be persisted — so if a matched rule contains a dangerous prefix (e.g.
+`Bash(curl *)`), allow-always is refused regardless of which specific
+call triggered the prompt.
+
+If no rule matched (only happens under `strict` mode where everything
+asks), allow-always persists the exact call.
+
 ## Per-tool content extraction (`paramKeys`)
 
 For tools where the policy-relevant content lives in a param (e.g.

@@ -2,7 +2,7 @@
   "id": "agent-permissions",
   "name": "Agent Permissions",
   "description": "Permission and approval engine for OpenClaw agents. Reads rules from openclaw.json (allow/deny/ask arrays with wildcard support) and gates ANY tool call generically — built-in tools (bash, file edit, etc.) and tools registered by other plugins, with no inter-plugin coupling required. Consumer plugins can optionally register resolvers for richer prompts. In-chat approval via OpenClaw's native requireApproval. No network calls.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

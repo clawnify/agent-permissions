@@ -276,12 +276,41 @@ function register(api: PluginApi): void {
         }
 
         if (decision.bucket === "ask") {
-          const dangerous = isDangerousRuleContent(req.ruleContent, dangerousPatterns);
+          // Determine the rule string that "allow-always" will persist.
+          // If a rule matched (operator wrote an ask pattern that caught
+          // this call), persist THAT rule's pattern — so one "always"
+          // click grants the breadth the operator already declared. Falls
+          // back to the exact call content when no rule matched (only
+          // happens in strict mode where everything asks by default).
+          const ruleStringForPersist = (() => {
+            const mr = decision.matchedRule;
+            if (mr) {
+              return mr.ruleContent
+                ? `${mr.toolName}(${mr.ruleContent})`
+                : mr.toolName;
+            }
+            return req.ruleContent
+              ? `${event.toolName}(${req.ruleContent})`
+              : event.toolName;
+          })();
+
+          // For the dangerous-pattern check, evaluate against the content
+          // that WOULD be persisted (the rule pattern, not the exact
+          // call). That way `Bash(curl *)` rule → allow-always refused,
+          // not just `Bash(curl https://x.com/y)`.
+          const dangerousContent =
+            decision.matchedRule?.ruleContent ?? req.ruleContent;
+          const dangerous = isDangerousRuleContent(
+            dangerousContent,
+            dangerousPatterns,
+          );
+
           const description = dangerous
             ? `${req.description}\n\n_⚠ This pattern can run arbitrary code; allow-always is disabled._`
-            : decision.reason
-              ? `${req.description}\n\nWhy: ${decision.reason}`
-              : req.description;
+            : (decision.reason
+                ? `${req.description}\n\nMatched: ${decision.reason}`
+                : req.description) +
+              `\n\n_'Always' will allow: \`${ruleStringForPersist}\`_`;
 
           const sessionKey = event.context?.sessionKey;
 
@@ -297,17 +326,14 @@ function register(api: PluginApi): void {
                 if (dangerous) {
                   api.logger.warn(
                     `agent-permissions: refused to persist allow-always for dangerous rule ` +
-                      `${event.toolName}(${req.ruleContent ?? ""}) — pattern is on the dangerous list`,
+                      `${ruleStringForPersist} — pattern is on the dangerous list`,
                   );
                   return;
                 }
-                const ruleString = req.ruleContent
-                  ? `${event.toolName}(${req.ruleContent})`
-                  : event.toolName;
-                const parsed = parseRuleString(ruleString);
+                const parsed = parseRuleString(ruleStringForPersist);
                 if (!parsed) {
                   api.logger.warn(
-                    `agent-permissions: could not parse rule for persist: ${ruleString}`,
+                    `agent-permissions: could not parse rule for persist: ${ruleStringForPersist}`,
                   );
                   return;
                 }
@@ -329,10 +355,25 @@ function register(api: PluginApi): void {
 
                 cachedRules = null; // invalidate
 
+                // Report the actual persisted rule's content (matched-rule
+                // pattern when applicable), not the exact call — listeners
+                // should see what was learned, not what triggered it.
+                const persistedContent = ((): string | undefined => {
+                  switch (parsed.content.type) {
+                    case "any":
+                      return undefined;
+                    case "exact":
+                      return parsed.content.value;
+                    case "prefix":
+                      return `${parsed.content.value}:*`;
+                    case "wildcard":
+                      return parsed.content.pattern;
+                  }
+                })();
                 const persistedEvent: AllowAlwaysEvent = {
                   rule: {
                     toolName: parsed.toolName,
-                    ruleContent: req.ruleContent,
+                    ruleContent: persistedContent,
                   },
                   destination: "user",
                   sessionKey,
