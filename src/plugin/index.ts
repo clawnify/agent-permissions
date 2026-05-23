@@ -96,6 +96,7 @@ interface PluginConfig {
   deny?: string[];
   ask?: string[];
   dangerousPatterns?: string[];
+  paramKeys?: Record<string, string>;
   userRulesPath?: string;
   localRulesPath?: string;
   approvalTimeoutMs?: number;
@@ -122,8 +123,25 @@ function previewJson(value: unknown, max = 600): string {
 function buildGenericGateRequest(
   toolName: string,
   params: Record<string, unknown>,
+  paramKeys: Record<string, string> | undefined,
 ): GateRequest {
-  // Shell-like tools: pull the actual command into ruleContent so wildcard
+  // 1. Operator-configured paramKey: if openclaw.json says which param
+  // carries the policy-relevant content for this tool, use that. Lets
+  // wildcard rules like `clawnify_action(GMAIL_EMAIL_*)` work without
+  // the consumer plugin needing to register a resolver.
+  const paramKey = paramKeys?.[toolName];
+  if (paramKey) {
+    const raw = params[paramKey];
+    if (typeof raw === "string" && raw.length > 0) {
+      return {
+        ruleContent: raw,
+        title: "Run `" + toolName + "` (" + raw + ")?",
+        description: "Params: ```json\n" + previewJson(params) + "\n```",
+      };
+    }
+  }
+
+  // 2. Shell tools: pull the actual command into ruleContent so wildcard
   // rules can match it (e.g. `Bash(curl *)` against `curl https://foo`).
   // OpenClaw's built-in shell tool surfaces as `bash` in some paths and
   // `exec` in others; cover both.
@@ -139,7 +157,7 @@ function buildGenericGateRequest(
     }
   }
 
-  // Default: tool-wide rule matching (ruleContent undefined → only `Tool`
+  // 3. Default: tool-wide rule matching (ruleContent undefined → only `Tool`
   // or `Tool(*)` rules apply) + a generic JSON-preview prompt.
   return {
     title: "Run `" + toolName + "`?",
@@ -240,7 +258,7 @@ function register(api: PluginApi): void {
           if (!resolved) return undefined; // resolver opted out
           req = resolved;
         } else {
-          req = buildGenericGateRequest(event.toolName, params);
+          req = buildGenericGateRequest(event.toolName, params, cfg.paramKeys);
         }
 
         const decision = evaluatePolicy({

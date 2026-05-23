@@ -2,7 +2,7 @@
   "id": "agent-permissions",
   "name": "Agent Permissions",
   "description": "Permission and approval engine for OpenClaw agents. Reads rules from openclaw.json (allow/deny/ask arrays with wildcard support) and gates ANY tool call generically — built-in tools (bash, file edit, etc.) and tools registered by other plugins, with no inter-plugin coupling required. Consumer plugins can optionally register resolvers for richer prompts. In-chat approval via OpenClaw's native requireApproval. No network calls.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -30,6 +30,11 @@
         "type": "array",
         "items": { "type": "string" },
         "description": "Prefixes that may match allow rules but can never be allow-always-persisted. Defaults to the built-in list (python/node/eval/curl/wget/ssh/sudo/…). Override here to extend or replace."
+      },
+      "paramKeys": {
+        "type": "object",
+        "additionalProperties": { "type": "string" },
+        "description": "Per-tool param-extraction map: { toolName: paramName }. When a tool call fires, if paramKeys[toolName] is set, the engine reads params[paramName] as the rule content for matching. Lets wildcard rules like 'clawnify_action(GMAIL_EMAIL_*)' match without the consumer plugin needing to register a resolver. Falls back to built-in extraction (shell command for bash/exec) or tool-wide matching when no entry exists."
       },
       "userRulesPath": {
         "type": "string",

@@ -81,6 +81,44 @@ participate without each one rebuilding the policy / approval / learning loop.
 | Dangerous-pattern denylist | Patterns like `python:*`, `node:*`, `eval` cannot be allow-always-persisted |
 | Fail-closed | OpenClaw's hook runner catches exceptions and fails open — this plugin wraps every code path in try/catch and returns `{ block: true }` instead |
 
+## Per-tool content extraction (`paramKeys`)
+
+For tools where the policy-relevant content lives in a param (e.g.
+Composio's `clawnify_action` takes `{ slug, args }` and you want to gate
+on the slug), configure `paramKeys` in `openclaw.json`:
+
+```jsonc
+"agent-permissions": {
+  "config": {
+    "paramKeys": {
+      "clawnify_action": "slug",
+      "clawnify_call_app_api": "method"
+    },
+    "ask": [
+      "clawnify_action(*_DELETE*)",
+      "clawnify_action(*_SEND*)",
+      "clawnify_call_app_api(POST)",
+      "clawnify_call_app_api(DELETE)"
+    ],
+    "allow": [
+      "clawnify_action(GMAIL_EMAIL_LIST)",
+      "clawnify_action(GMAIL_EMAIL_GET)"
+    ]
+  }
+}
+```
+
+With the map above:
+
+- `clawnify_action({ slug: "GMAIL_SEND_EMAIL" })` → matches `clawnify_action(*_SEND*)` → asks
+- `clawnify_action({ slug: "GMAIL_EMAIL_LIST" })` → matches the explicit allow → passes
+- `clawnify_action({ slug: "GMAIL_EMAIL_DELETE" })` → matches `clawnify_action(*_DELETE*)` → asks
+
+No consumer-plugin awareness needed. Wildcard semantics (`*` matches any
+chars), prefix legacy (`foo:*`), and exact matching all apply to the
+extracted content. Falls back to existing behavior (built-in extractor
+for shell tools, tool-wide otherwise) when no `paramKeys` entry exists.
+
 ## Default modes
 
 - **`default`** (out of the box) — operator-opt-in: tools pass through unless an `ask` or `deny` rule explicitly matches. No surprises; you add rules for what you want gated.
