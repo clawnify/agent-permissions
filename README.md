@@ -34,7 +34,11 @@ Then enable in `openclaw.json`:
         "config": {
           "defaultMode": "default",
           "ask": ["Bash(*)"],
-          "deny": ["Bash(rm -rf /:*)"]
+          "deny": ["Bash(rm -rf /:*)"],
+          // Auto-allow `ask` decisions in unattended sessions (no operator to
+          // prompt); `deny` is still enforced. Matched as substrings of the
+          // session key. Empty by default.
+          "skipSessionPatterns": ["hook:email", "webhook", "cron"]
         }
       }
     },
