@@ -100,6 +100,7 @@ interface PluginConfig {
   userRulesPath?: string;
   localRulesPath?: string;
   approvalTimeoutMs?: number;
+  skipSessionPatterns?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -112,12 +113,20 @@ interface PluginConfig {
 // ruleContent so wildcard rules can match (e.g. `Bash(curl *)` matches the
 // actual shell command) and generates a JSON-preview prompt.
 
-function previewJson(value: unknown, max = 600): string {
+function previewJson(value: unknown, max = 200): string {
   try {
     return JSON.stringify(value ?? {}, null, 2).slice(0, max);
   } catch {
     return "[unserializable]";
   }
+}
+
+// The gateway's plugin.approval.request schema rejects title > 80 or
+// description > 256 chars with INVALID_REQUEST — surfaced to the agent as a
+// misleading "gateway unavailable" and no approval UI is ever shown. Clamp
+// both to stay under the caps.
+function clampChars(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
 
 function buildGenericGateRequest(
@@ -152,7 +161,7 @@ function buildGenericGateRequest(
       return {
         ruleContent: cmd,
         title: "Run shell command?",
-        description: "```bash\n" + cmd.slice(0, 600) + "\n```",
+        description: "```bash\n" + cmd.slice(0, 200) + "\n```",
       };
     }
   }
@@ -177,6 +186,7 @@ function register(api: PluginApi): void {
     cfg.dangerousPatterns && cfg.dangerousPatterns.length > 0
       ? cfg.dangerousPatterns
       : DEFAULT_DANGEROUS_PATTERNS;
+  const skipSessionPatterns = cfg.skipSessionPatterns ?? [];
 
   const paths: SourcePaths = defaultSourcePaths({
     local: cfg.localRulesPath,
@@ -276,6 +286,20 @@ function register(api: PluginApi): void {
         }
 
         if (decision.bucket === "ask") {
+          const sessionKey = event.context?.sessionKey;
+
+          // Unattended sessions (inbound email, webhooks, cron) have no
+          // operator to answer a prompt. When the operator has opted in by
+          // listing a matching pattern, auto-allow 'ask' decisions rather
+          // than hanging until timeout. 'deny' rules are still enforced
+          // (handled above), so this only relaxes the ask bucket.
+          if (
+            sessionKey &&
+            skipSessionPatterns.some((p) => sessionKey.includes(p))
+          ) {
+            return undefined;
+          }
+
           // Determine the rule string that "allow-always" will persist.
           // If a rule matched (operator wrote an ask pattern that caught
           // this call), persist THAT rule's pattern — so one "always"
@@ -305,18 +329,18 @@ function register(api: PluginApi): void {
             dangerousPatterns,
           );
 
-          const description = dangerous
-            ? `${req.description}\n\n_⚠ This pattern can run arbitrary code; allow-always is disabled._`
-            : (decision.reason
-                ? `${req.description}\n\nMatched: ${decision.reason}`
-                : req.description) +
-              `\n\n_'Always' will allow: \`${ruleStringForPersist}\`_`;
-
-          const sessionKey = event.context?.sessionKey;
+          // Lead with the decision-relevant note (what 'always' grants, or
+          // the danger warning) so it survives the 256-char clamp; the raw
+          // command/params preview trails and absorbs any truncation.
+          const note = dangerous
+            ? "⚠ Runs arbitrary code; allow-always is disabled."
+            : `_'Always' will allow: \`${ruleStringForPersist}\`_` +
+              (decision.reason ? `\nMatched: ${decision.reason}` : "");
+          const description = clampChars(`${note}\n\n${req.description}`, 256);
 
           return {
             requireApproval: {
-              title: req.title,
+              title: clampChars(req.title, 80),
               description,
               severity: dangerous ? "critical" : "warning",
               timeoutMs: approvalTimeoutMs,
