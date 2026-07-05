@@ -287,6 +287,27 @@ npm test
 
 Tests use Node's built-in test runner via `tsx`. No vitest/jest setup.
 
+## Permission hardening (agent-proposed, self-gated)
+
+Changing the rule set is itself a **gated tool call**, not a file edit you hope to
+intercept. Two tools (v0.5.0):
+
+- **`permissions_propose_hardening`** *(read-only)* — returns observed tool usage
+  (since boot), the current rules, and a suggested set of high-risk gates in
+  `ToolName(pattern)` syntax. The agent reasons over this with the operator.
+- **`permissions_set`** *(mutation, merge semantics)* — appends rules to a bucket
+  in the target file (never replaces). Defaults to **user scope**
+  (`~/.openclaw/permissions.json`).
+
+`permissions_set` is **self-gated**: when `protectPermissions` is on (the
+default) every call forces an approval and can never be allow-always-persisted,
+so an agent can only *request* a permission change — a human approves the diff.
+Set `protectPermissions: false` to opt out (it then follows normal policy).
+
+> Tool names match **exactly and case-sensitively**. OpenClaw surfaces the shell
+> as `bash` / `exec` (lowercase) — write shell rules as `bash(curl *)` /
+> `exec(curl *)`, not `Bash(...)`.
+
 ## Releases
 
 Tag a release on GitHub → `.github/workflows/publish.yml` runs `npm publish --provenance`.
