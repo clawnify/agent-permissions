@@ -15,8 +15,10 @@ import type {
   AllowAlwaysEvent,
   AllowAlwaysListener,
   GateRequest,
+  PolicyBucket,
   ResolveFn,
   ResolverRegistration,
+  RuleDestination,
 } from "../api/types.js";
 import {
   DEFAULT_DANGEROUS_PATTERNS,
@@ -27,7 +29,7 @@ import {
   type DefaultMode,
   type RuleSet,
 } from "../engine/rule-matcher.js";
-import { parseRuleString } from "../engine/rule-parser.js";
+import { parseRuleString, serializeRule } from "../engine/rule-parser.js";
 import {
   defaultSourcePaths,
   loadAllRules,
@@ -70,6 +72,18 @@ interface PluginLogger {
   warn: (msg: string) => void;
 }
 
+interface ToolResult {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+}
+
+interface ToolRegistration {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (id: string, params: unknown) => Promise<ToolResult> | ToolResult;
+}
+
 interface PluginApi {
   pluginConfig?: unknown;
   logger: PluginLogger;
@@ -84,6 +98,7 @@ interface PluginApi {
       | void,
     options?: { priority?: number; timeoutMs?: number },
   ): void;
+  registerTool(reg: ToolRegistration): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +116,7 @@ interface PluginConfig {
   localRulesPath?: string;
   approvalTimeoutMs?: number;
   skipSessionPatterns?: string[];
+  protectPermissions?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +144,45 @@ function previewJson(value: unknown, max = 200): string {
 function clampChars(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
+
+// ---------------------------------------------------------------------------
+// Tool helpers (permissions_set / permissions_propose_hardening)
+// ---------------------------------------------------------------------------
+
+function toolResult(value: unknown): ToolResult {
+  const text =
+    typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return { content: [{ type: "text", text }] };
+}
+
+function serializeBuckets(rules: RuleSet): {
+  allow: string[];
+  deny: string[];
+  ask: string[];
+} {
+  const ser = (arr: RuleSet["allow"]) => arr.map((s) => serializeRule(s.rule));
+  return { allow: ser(rules.allow), deny: ser(rules.deny), ask: ser(rules.ask) };
+}
+
+// The matcher is case-sensitive and exact on tool name, and OpenClaw surfaces
+// the shell as both `bash` and `exec` (lowercase — the generic extractor keys
+// off exactly these). So hardening suggestions are rendered against the shell
+// tool name(s) this agent actually uses (from the usage tally), defaulting to
+// both when nothing's been observed yet. A capital `Bash(...)` rule would match
+// nothing.
+const SHELL_TOOL_NAMES = ["bash", "exec"];
+
+// Curated, low-false-positive shell verbs the propose tool recommends gating
+// when not already covered. Deliberately small — the genuinely high-risk verbs,
+// not every interpreter (those are high-volume and better judged against the
+// observed usage the tool also returns).
+const HARDENING_VERBS: { verb: string; why: string }[] = [
+  { verb: "sudo", why: "privilege escalation" },
+  { verb: "ssh", why: "remote command execution / pivot" },
+  { verb: "curl", why: "network fetch — exfiltration / remote payload" },
+  { verb: "wget", why: "network fetch — exfiltration / remote payload" },
+  { verb: "eval", why: "evaluates arbitrary code" },
+];
 
 function buildGenericGateRequest(
   toolName: string,
@@ -187,6 +242,12 @@ function register(api: PluginApi): void {
       ? cfg.dangerousPatterns
       : DEFAULT_DANGEROUS_PATTERNS;
   const skipSessionPatterns = cfg.skipSessionPatterns ?? [];
+  const protectPermissions = cfg.protectPermissions !== false;
+
+  // Lightweight since-boot tool-usage tally. The gate sees every tool call, so
+  // this is free signal for permissions_propose_hardening — no session-history
+  // access needed. In-memory only; resets on gateway restart.
+  const usage = new Map<string, number>();
 
   const paths: SourcePaths = defaultSourcePaths({
     local: cfg.localRulesPath,
@@ -253,7 +314,46 @@ function register(api: PluginApi): void {
     "before_tool_call",
     async (event: BeforeToolCallEvent): Promise<BeforeToolCallResult | undefined> => {
       try {
+        usage.set(event.toolName, (usage.get(event.toolName) ?? 0) + 1);
         const params = (event.params as Record<string, unknown>) ?? {};
+
+        // Self-protection: permissions_set is the sanctioned way to change the
+        // rule set, so changing permissions IS a gated tool call. Force an
+        // approval on every call and never persist it (allow-always is a no-op
+        // here — one approval must not open the door forever), so an agent can
+        // only *request* a permission change, not self-grant one. Deny still
+        // wins for a human who wrote a deny rule against it. Disable with
+        // config.protectPermissions=false.
+        if (event.toolName === "permissions_set" && protectPermissions) {
+          const p = params as {
+            allow?: string[];
+            deny?: string[];
+            ask?: string[];
+            scope?: string;
+          };
+          const parts: string[] = [];
+          for (const b of ["deny", "ask", "allow"] as const) {
+            const rs = p[b];
+            if (rs && rs.length) parts.push(`+${b}: ${rs.join(", ")}`);
+          }
+          const scope = p.scope === "local" ? "local" : "user";
+          const summary =
+            (parts.length ? parts.join(" | ") : "no rules specified") +
+            ` → ${scope} scope`;
+          return {
+            requireApproval: {
+              title: "Modify permission rules?",
+              description: clampChars(
+                `${summary}\n\n_Changes what the agent may do; approve once (not remembered)._`,
+                256,
+              ),
+              severity: "warning",
+              timeoutMs: approvalTimeoutMs,
+              timeoutBehavior: "deny",
+              // Intentionally no onResolution persist path.
+            },
+          };
+        }
 
         // Build a GateRequest for the call. If a resolver was registered
         // for this toolName we use its rich prompt; otherwise fall back to
@@ -434,13 +534,137 @@ function register(api: PluginApi): void {
     { priority: 100 },
   );
 
+  // ---------- permissions_propose_hardening (read-only) ----------
+  // Gives the agent structured raw material to propose a hardening plan to the
+  // operator: what the agent has actually been doing (since-boot usage), what's
+  // already gated, and a curated baseline of high-risk gates not yet in place.
+  // The agent reasons over this with the operator, then applies via
+  // permissions_set (which is itself approval-gated).
+  api.registerTool({
+    name: "permissions_propose_hardening",
+    description:
+      "Propose permission-hardening rules for this agent. Returns observed tool usage, the current rule set, and a suggested set of gates (in ToolName / ToolName(pattern) syntax). Read-only — apply the approved subset with permissions_set.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        scope: {
+          type: "string",
+          enum: ["user", "local"],
+          description:
+            "Scope the proposal targets. Defaults to 'user' (~/.openclaw/permissions.json).",
+        },
+      },
+    },
+    execute(_id, params) {
+      const scope =
+        (params as { scope?: string })?.scope === "local" ? "local" : "user";
+      const current = serializeBuckets(getRules());
+      const covered = new Set([...current.ask, ...current.deny, ...current.allow]);
+      // Target the shell tool(s) actually in use; fall back to both when the
+      // agent hasn't run a shell command since boot.
+      const observedShell = SHELL_TOOL_NAMES.filter((t) => usage.has(t));
+      const shellTools = observedShell.length ? observedShell : SHELL_TOOL_NAMES;
+      const suggestedAsk: string[] = [];
+      const rationale: string[] = [];
+      for (const tool of shellTools) {
+        for (const { verb, why } of HARDENING_VERBS) {
+          const rule = `${tool}(${verb} *)`;
+          if (!covered.has(rule)) {
+            suggestedAsk.push(rule);
+            rationale.push(`${rule} — ${why}`);
+          }
+        }
+      }
+      const observed = Object.fromEntries(
+        [...usage.entries()].sort((a, b) => b[1] - a[1]),
+      );
+      return toolResult({
+        scope,
+        observedToolUsageSinceBoot: observed,
+        currentRules: current,
+        suggested: { ask: suggestedAsk, deny: [], allow: [] },
+        rationale,
+        howToApply:
+          "Review with the operator, then call permissions_set with the approved subset. Each apply requires approval.",
+      });
+    },
+  });
+
+  // ---------- permissions_set (mutation, self-gated) ----------
+  // The sanctioned way to change the rule set. Merge semantics: each rule is
+  // appended to its bucket in the target file if not already present (never a
+  // replace). Defaults to user scope. The before_tool_call gate above forces an
+  // approval on every call when protectPermissions is on.
+  api.registerTool({
+    name: "permissions_set",
+    description:
+      "Add permission rules (merge, not replace) to this agent's rule set. Rules use ToolName or ToolName(pattern) syntax. Defaults to user scope (~/.openclaw/permissions.json). Requires approval unless the operator disabled protectPermissions.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        allow: {
+          type: "array",
+          items: { type: "string" },
+          description: "Rules to allow, e.g. 'Bash(git *)'.",
+        },
+        deny: {
+          type: "array",
+          items: { type: "string" },
+          description: "Rules to hard-block, e.g. 'Bash(sudo *)'.",
+        },
+        ask: {
+          type: "array",
+          items: { type: "string" },
+          description: "Rules to gate behind approval, e.g. 'Bash(curl *)'.",
+        },
+        scope: {
+          type: "string",
+          enum: ["user", "local"],
+          description:
+            "Where to persist. Defaults to 'user' (~/.openclaw/permissions.json).",
+        },
+      },
+    },
+    execute(_id, params) {
+      const p = (params ?? {}) as {
+        allow?: string[];
+        deny?: string[];
+        ask?: string[];
+        scope?: string;
+      };
+      const destination: RuleDestination = p.scope === "local" ? "local" : "user";
+      const applied: string[] = [];
+      const skipped: string[] = [];
+      for (const bucket of ["allow", "deny", "ask"] as PolicyBucket[]) {
+        for (const s of p[bucket] ?? []) {
+          const rule = parseRuleString(s);
+          if (!rule) {
+            skipped.push(`${s} (unparseable)`);
+            continue;
+          }
+          try {
+            persistRule({ rule, bucket, destination, paths, sessionStore });
+            applied.push(`${bucket}: ${serializeRule(rule)}`);
+          } catch (err) {
+            skipped.push(`${s} (${String(err)})`);
+          }
+        }
+      }
+      cachedRules = null; // invalidate — next evaluate re-reads the file
+      return toolResult({ scope: destination, applied, skipped });
+    },
+  });
+
   const ruleCount =
     (cfg.allow?.length ?? 0) +
     (cfg.deny?.length ?? 0) +
     (cfg.ask?.length ?? 0);
   api.logger.info(
     `agent-permissions registered (defaultMode=${defaultMode}, ` +
-      `config rules=${ruleCount}, ` +
+      `config rules=${ruleCount}, protectPermissions=${protectPermissions}, ` +
+      `tools=[permissions_propose_hardening, permissions_set], ` +
       `userRules=${paths.user}, localRules=${paths.local})`,
   );
 }

@@ -2,8 +2,11 @@
   "id": "agent-permissions",
   "name": "Agent Permissions",
   "description": "Permission and approval engine for OpenClaw agents. Reads rules from openclaw.json (allow/deny/ask arrays with wildcard support) and gates ANY tool call generically — built-in tools (bash, file edit, etc.) and tools registered by other plugins, with no inter-plugin coupling required. Consumer plugins can optionally register resolvers for richer prompts. In-chat approval via OpenClaw's native requireApproval. No network calls.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "activation": { "onStartup": true },
+  "contracts": {
+    "tools": ["permissions_propose_hardening", "permissions_set"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -54,6 +57,11 @@
         "type": "array",
         "items": { "type": "string" },
         "description": "Substrings matched against the session key. When one matches, 'ask' decisions are auto-allowed instead of prompting — for unattended sessions (inbound email, webhooks, cron) with no operator to respond. 'deny' rules are still enforced. Empty by default (every ask prompts)."
+      },
+      "protectPermissions": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true (default), every permissions_set call — the sanctioned way to change the rule set — is forced to prompt for approval and can never be allow-always-persisted, so an agent cannot silently weaken its own permissions. Set false to disable the self-gate (permissions_set then follows normal policy like any other tool)."
       }
     }
   }
