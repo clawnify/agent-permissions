@@ -32,8 +32,10 @@ import {
 import { parseRuleString, serializeRule } from "../engine/rule-parser.js";
 import {
   defaultSourcePaths,
+  fileMtimeStamp,
   loadAllRules,
   persistRule,
+  removeRule,
   SessionRuleStore,
   type SourcePaths,
 } from "../engine/rule-sources.js";
@@ -258,12 +260,16 @@ function register(api: PluginApi): void {
   const allowAlwaysListeners: AllowAlwaysListener[] = [];
   const sessionStore = new SessionRuleStore();
 
-  // Build the rule set once at register time. v1 has no file watchers —
-  // restart the gateway after editing the JSON files. Session rules are
-  // re-read on every evaluate() because the store is appended to live.
+  // Rule set is cached but rebuilt whenever the permission files change on disk
+  // — so edits (via our own tool, an operator, or a direct write) take effect
+  // without a gateway restart. Session-store mutations set cachedRules=null
+  // explicitly (they don't touch a file, so the mtime stamp wouldn't catch
+  // them). Config rules are static.
   let cachedRules: RuleSet | null = null;
+  let cachedStamp = "";
   const getRules = (): RuleSet => {
-    if (!cachedRules) {
+    const stamp = fileMtimeStamp(paths);
+    if (!cachedRules || stamp !== cachedStamp) {
       cachedRules = loadAllRules({
         config: {
           allow: cfg.allow,
@@ -274,6 +280,7 @@ function register(api: PluginApi): void {
         sessionStore,
         logger: api.logger,
       });
+      cachedStamp = stamp;
     }
     return cachedRules;
   };
@@ -329,6 +336,7 @@ function register(api: PluginApi): void {
             allow?: string[];
             deny?: string[];
             ask?: string[];
+            remove?: string[];
             scope?: string;
           };
           const parts: string[] = [];
@@ -336,6 +344,7 @@ function register(api: PluginApi): void {
             const rs = p[b];
             if (rs && rs.length) parts.push(`+${b}: ${rs.join(", ")}`);
           }
+          if (p.remove && p.remove.length) parts.push(`−remove: ${p.remove.join(", ")}`);
           const scope = p.scope === "local" ? "local" : "user";
           const summary =
             (parts.length ? parts.join(" | ") : "no rules specified") +
@@ -592,14 +601,16 @@ function register(api: PluginApi): void {
   });
 
   // ---------- permissions_set (mutation, self-gated) ----------
-  // The sanctioned way to change the rule set. Merge semantics: each rule is
-  // appended to its bucket in the target file if not already present (never a
-  // replace). Defaults to user scope. The before_tool_call gate above forces an
-  // approval on every call when protectPermissions is on.
+  // The sanctioned way to change the rule set. A rule lives in exactly ONE
+  // bucket: setting it in allow/deny/ask moves it there (removing it from the
+  // others), so e.g. downgrading allow→ask actually takes effect instead of the
+  // old allow lingering and winning. `remove` deletes rules outright. Other
+  // rules are untouched (merge, not replace). Defaults to user scope. The
+  // before_tool_call gate above forces approval when protectPermissions is on.
   api.registerTool({
     name: "permissions_set",
     description:
-      "Add permission rules (merge, not replace) to this agent's rule set. Rules use ToolName or ToolName(pattern) syntax. Defaults to user scope (~/.openclaw/permissions.json). Requires approval unless the operator disabled protectPermissions.",
+      "Add, move, or remove permission rules. Setting a rule in allow/deny/ask MOVES it there (a rule is only ever in one bucket). `remove` deletes rules. Other rules are left as-is. Rules use ToolName or ToolName(pattern) syntax (e.g. 'bash(curl *)'). Defaults to user scope (~/.openclaw/permissions.json). Requires approval unless the operator disabled protectPermissions.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -607,17 +618,22 @@ function register(api: PluginApi): void {
         allow: {
           type: "array",
           items: { type: "string" },
-          description: "Rules to allow, e.g. 'Bash(git *)'.",
+          description: "Rules to allow (moved out of deny/ask), e.g. 'bash(git *)'.",
         },
         deny: {
           type: "array",
           items: { type: "string" },
-          description: "Rules to hard-block, e.g. 'Bash(sudo *)'.",
+          description: "Rules to hard-block, e.g. 'bash(sudo *)'.",
         },
         ask: {
           type: "array",
           items: { type: "string" },
-          description: "Rules to gate behind approval, e.g. 'Bash(curl *)'.",
+          description: "Rules to gate behind approval, e.g. 'bash(curl *)'.",
+        },
+        remove: {
+          type: "array",
+          items: { type: "string" },
+          description: "Rules to delete from every bucket, e.g. 'clawnify_update_app'.",
         },
         scope: {
           type: "string",
@@ -632,18 +648,38 @@ function register(api: PluginApi): void {
         allow?: string[];
         deny?: string[];
         ask?: string[];
+        remove?: string[];
         scope?: string;
       };
       const destination: RuleDestination = p.scope === "local" ? "local" : "user";
+      const buckets = ["allow", "deny", "ask"] as PolicyBucket[];
       const applied: string[] = [];
+      const removed: string[] = [];
       const skipped: string[] = [];
-      for (const bucket of ["allow", "deny", "ask"] as PolicyBucket[]) {
+
+      // Explicit removals first — take the rule out of every bucket.
+      for (const s of p.remove ?? []) {
+        const rule = parseRuleString(s);
+        if (!rule) {
+          skipped.push(`${s} (unparseable)`);
+          continue;
+        }
+        if (removeRule({ rule, buckets, destination, paths, sessionStore })) {
+          removed.push(serializeRule(rule));
+        }
+      }
+
+      // Sets — remove from the other buckets first so the rule ends up in
+      // exactly the one requested (this is the allow→ask "move" fix).
+      for (const bucket of buckets) {
         for (const s of p[bucket] ?? []) {
           const rule = parseRuleString(s);
           if (!rule) {
             skipped.push(`${s} (unparseable)`);
             continue;
           }
+          const others = buckets.filter((b) => b !== bucket);
+          removeRule({ rule, buckets: others, destination, paths, sessionStore });
           try {
             persistRule({ rule, bucket, destination, paths, sessionStore });
             applied.push(`${bucket}: ${serializeRule(rule)}`);
@@ -653,7 +689,7 @@ function register(api: PluginApi): void {
         }
       }
       cachedRules = null; // invalidate — next evaluate re-reads the file
-      return toolResult({ scope: destination, applied, skipped });
+      return toolResult({ scope: destination, applied, removed, skipped });
     },
   });
 

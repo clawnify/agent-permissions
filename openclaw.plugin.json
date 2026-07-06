@@ -1,11 +1,16 @@
 {
   "id": "agent-permissions",
   "name": "Agent Permissions",
-  "description": "Permission and approval engine for OpenClaw agents. Reads rules from openclaw.json (allow/deny/ask arrays with wildcard support) and gates ANY tool call generically — built-in tools (bash, file edit, etc.) and tools registered by other plugins, with no inter-plugin coupling required. Consumer plugins can optionally register resolvers for richer prompts. In-chat approval via OpenClaw's native requireApproval. No network calls.",
-  "version": "0.5.0",
-  "activation": { "onStartup": true },
+  "description": "Permission and approval engine for OpenClaw agents. Reads rules from openclaw.json (allow/deny/ask arrays with wildcard support) and gates ANY tool call generically \u2014 built-in tools (bash, file edit, etc.) and tools registered by other plugins, with no inter-plugin coupling required. Consumer plugins can optionally register resolvers for richer prompts. In-chat approval via OpenClaw's native requireApproval. No network calls.",
+  "version": "0.5.1",
+  "activation": {
+    "onStartup": true
+  },
   "contracts": {
-    "tools": ["permissions_propose_hardening", "permissions_set"]
+    "tools": [
+      "permissions_propose_hardening",
+      "permissions_set"
+    ]
   },
   "configSchema": {
     "type": "object",
@@ -13,31 +18,47 @@
     "properties": {
       "defaultMode": {
         "type": "string",
-        "enum": ["default", "acceptEdits", "bypassPermissions", "dontAsk", "strict"],
+        "enum": [
+          "default",
+          "acceptEdits",
+          "bypassPermissions",
+          "dontAsk",
+          "strict"
+        ],
         "default": "default",
         "description": "Global session disposition. 'default' = operator-opt-in (tools pass through unless an ask/deny rule matches). 'strict' = ask on anything not explicitly allowed (Claude-Code style). 'bypassPermissions'/'dontAsk' = allow everything (deny rules still respected)."
       },
       "allow": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Rule strings in the form 'ToolName' or 'ToolName(content)'. Content supports exact match, legacy prefix 'foo:*', and wildcard 'foo *'."
       },
       "deny": {
         "type": "array",
-        "items": { "type": "string" }
+        "items": {
+          "type": "string"
+        }
       },
       "ask": {
         "type": "array",
-        "items": { "type": "string" }
+        "items": {
+          "type": "string"
+        }
       },
       "dangerousPatterns": {
         "type": "array",
-        "items": { "type": "string" },
-        "description": "Prefixes that may match allow rules but can never be allow-always-persisted. Defaults to the built-in list (python/node/eval/curl/wget/ssh/sudo/…). Override here to extend or replace."
+        "items": {
+          "type": "string"
+        },
+        "description": "Prefixes that may match allow rules but can never be allow-always-persisted. Defaults to the built-in list (python/node/eval/curl/wget/ssh/sudo/\u2026). Override here to extend or replace."
       },
       "paramKeys": {
         "type": "object",
-        "additionalProperties": { "type": "string" },
+        "additionalProperties": {
+          "type": "string"
+        },
         "description": "Per-tool param-extraction map: { toolName: paramName }. When a tool call fires, if paramKeys[toolName] is set, the engine reads params[paramName] as the rule content for matching. Lets wildcard rules like 'clawnify_action(GMAIL_EMAIL_*)' match without the consumer plugin needing to register a resolver. Falls back to built-in extraction (shell command for bash/exec) or tool-wide matching when no entry exists."
       },
       "userRulesPath": {
@@ -55,13 +76,15 @@
       },
       "skipSessionPatterns": {
         "type": "array",
-        "items": { "type": "string" },
-        "description": "Substrings matched against the session key. When one matches, 'ask' decisions are auto-allowed instead of prompting — for unattended sessions (inbound email, webhooks, cron) with no operator to respond. 'deny' rules are still enforced. Empty by default (every ask prompts)."
+        "items": {
+          "type": "string"
+        },
+        "description": "Substrings matched against the session key. When one matches, 'ask' decisions are auto-allowed instead of prompting \u2014 for unattended sessions (inbound email, webhooks, cron) with no operator to respond. 'deny' rules are still enforced. Empty by default (every ask prompts)."
       },
       "protectPermissions": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), every permissions_set call — the sanctioned way to change the rule set — is forced to prompt for approval and can never be allow-always-persisted, so an agent cannot silently weaken its own permissions. Set false to disable the self-gate (permissions_set then follows normal policy like any other tool)."
+        "description": "When true (default), every permissions_set call \u2014 the sanctioned way to change the rule set \u2014 is forced to prompt for approval and can never be allow-always-persisted, so an agent cannot silently weaken its own permissions. Set false to disable the self-gate (permissions_set then follows normal policy like any other tool)."
       }
     }
   }

@@ -11,7 +11,13 @@
 // watchers — restart the gateway to pick up edits to the JSON files. This
 // matches how openclaw.json edits are picked up today.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import type { PolicyBucket, RuleDestination, RuleSource } from "../api/types.js";
@@ -44,6 +50,25 @@ export function defaultSourcePaths(overrides?: Partial<SourcePaths>): SourcePath
     local: overrides?.local ?? join(process.cwd(), ".openclaw", "permissions.json"),
     user: overrides?.user ?? join(homedir(), ".openclaw", "permissions.json"),
   };
+}
+
+/**
+ * A cheap stamp of the rule files' state (mtime + size per file). When this
+ * changes, the files were edited — directly, by an operator, or by our own
+ * persist — and the cached rule set must be rebuilt. This is what makes edits
+ * take effect without a gateway restart (v1 had no reload path, so rules set
+ * any way other than via the tool sat unloaded).
+ */
+export function fileMtimeStamp(paths: SourcePaths): string {
+  const stat = (p: string): string => {
+    try {
+      const s = statSync(p);
+      return `${s.mtimeMs}:${s.size}`;
+    } catch {
+      return "0";
+    }
+  };
+  return `${stat(paths.user)}|${stat(paths.local)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +168,15 @@ export class SessionRuleStore {
     if (target.some((existing) => sameRule(existing, rule))) return;
     target.push(rule);
   }
+
+  remove(rule: ParsedRule, bucket: PolicyBucket): boolean {
+    const target =
+      bucket === "allow" ? this.allow : bucket === "deny" ? this.deny : this.ask;
+    const i = target.findIndex((existing) => sameRule(existing, rule));
+    if (i < 0) return false;
+    target.splice(i, 1);
+    return true;
+  }
 }
 
 function sameRule(a: ParsedRule, b: ParsedRule): boolean {
@@ -195,4 +229,49 @@ function readPermissionsFile(filePath: string): PermissionsJson {
   const raw = readFileSync(filePath, "utf8");
   if (raw.trim() === "") return {};
   return JSON.parse(raw) as PermissionsJson;
+}
+
+/**
+ * Remove a rule from the given buckets at the destination. Returns true if
+ * anything was actually removed. Used both for explicit removal and to keep a
+ * rule in a single bucket (setting it in one bucket removes it from the others,
+ * so allow/ask/deny can't silently contradict). Never creates the file.
+ */
+export function removeRule(args: {
+  rule: ParsedRule;
+  buckets: PolicyBucket[];
+  destination: RuleDestination;
+  paths: SourcePaths;
+  sessionStore: SessionRuleStore;
+}): boolean {
+  if (args.destination === "session") {
+    let removed = false;
+    for (const b of args.buckets) {
+      if (args.sessionStore.remove(args.rule, b)) removed = true;
+    }
+    return removed;
+  }
+
+  const filePath = args.destination === "local" ? args.paths.local : args.paths.user;
+  if (!existsSync(filePath)) return false;
+  const existing = readPermissionsFile(filePath);
+  const block = existing.permissions;
+  if (!block) return false;
+  const serialized = serializeRule(args.rule);
+
+  let changed = false;
+  for (const bucket of args.buckets) {
+    const arr = block[bucket];
+    if (!arr) continue;
+    const filtered = arr.filter((r) => r !== serialized);
+    if (filtered.length !== arr.length) {
+      block[bucket] = filtered;
+      changed = true;
+    }
+  }
+  if (changed) {
+    existing.permissions = block;
+    writeFileSync(filePath, JSON.stringify(existing, null, 2) + "\n", "utf8");
+  }
+  return changed;
 }

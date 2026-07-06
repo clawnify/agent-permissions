@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import plugin from "../src/plugin/index.js";
@@ -107,5 +107,46 @@ describe("permissions_propose_hardening", () => {
     // suggests the shell actually used, high-risk verbs, minus what's covered
     assert.ok(p.suggested.ask.includes("bash(sudo *)"));
     assert.ok(!p.suggested.ask.includes("bash(curl *)"), "should not re-suggest a covered rule");
+  });
+});
+
+describe("permissions_set move + remove (v0.5.1)", () => {
+  it("setting a rule in ask MOVES it out of allow (no more allow-wins footgun)", async () => {
+    const file = tempRules();
+    const { tools } = makeApi({ defaultMode: "default", userRulesPath: file });
+    await tools.permissions_set.execute("1", { allow: ["clawnify_update_app"] });
+    await tools.permissions_set.execute("2", { ask: ["clawnify_update_app"] });
+    const disk = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(disk.permissions.ask, ["clawnify_update_app"]);
+    assert.ok(!(disk.permissions.allow ?? []).includes("clawnify_update_app"), "should be moved out of allow");
+  });
+
+  it("remove deletes a rule from every bucket", async () => {
+    const file = tempRules();
+    const { tools } = makeApi({ defaultMode: "default", userRulesPath: file });
+    await tools.permissions_set.execute("1", { allow: ["bash(git *)"], ask: ["bash(curl *)"] });
+    const res = await out(tools.permissions_set.execute("2", { remove: ["bash(git *)", "bash(curl *)"] }));
+    assert.equal(res.removed.length, 2);
+    const disk = JSON.parse(readFileSync(file, "utf8"));
+    assert.ok(!(disk.permissions.allow ?? []).includes("bash(git *)"));
+    assert.ok(!(disk.permissions.ask ?? []).includes("bash(curl *)"));
+  });
+});
+
+describe("rule-file cache reload (root fix)", () => {
+  it("picks up a rule written to the file directly, without permissions_set", async () => {
+    const file = tempRules();
+    const { hook } = makeApi({ defaultMode: "default", userRulesPath: file });
+    // first eval loads (empty) rules
+    const before = await hook({ toolName: "exec", params: { command: "cat secret" }, context: {} });
+    assert.equal(before, undefined, "no rule yet → passes");
+    // an operator (or the agent via exec) writes the file directly — no tool call
+    writeFileSync(file, JSON.stringify({ permissions: { deny: ["exec(cat *)"] } }, null, 2) + "\n");
+    const after = (await hook({
+      toolName: "exec",
+      params: { command: "cat secret" },
+      context: {},
+    })) as { block?: boolean } | undefined;
+    assert.ok(after?.block, "direct file edit should take effect on next eval (mtime reload)");
   });
 });
