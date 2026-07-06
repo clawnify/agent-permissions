@@ -295,14 +295,20 @@ intercept. Two tools (v0.5.0):
 - **`permissions_propose_hardening`** *(read-only)* — returns observed tool usage
   (since boot), the current rules, and a suggested set of high-risk gates in
   `ToolName(pattern)` syntax. The agent reasons over this with the operator.
-- **`permissions_set`** *(mutation, merge semantics)* — appends rules to a bucket
-  in the target file (never replaces). Defaults to **user scope**
-  (`~/.openclaw/permissions.json`).
+- **`permissions_set`** *(mutation)* — a rule lives in exactly **one** bucket, so
+  setting it in `allow`/`deny`/`ask` **moves** it there (setting `ask` on a rule
+  that was `allow` removes the `allow` — no more "allow silently wins over ask").
+  A `remove` param deletes rules outright. Other rules are left untouched (merge,
+  not replace). Defaults to **user scope** (`~/.openclaw/permissions.json`).
 
 `permissions_set` is **self-gated**: when `protectPermissions` is on (the
 default) every call forces an approval and can never be allow-always-persisted,
 so an agent can only *request* a permission change — a human approves the diff.
 Set `protectPermissions: false` to opt out (it then follows normal policy).
+
+Rules edited on disk (by the tool, an operator, or a direct write) are picked up
+**live** — the rule files are reloaded when their mtime changes, so no gateway
+restart is needed for an edit to take effect.
 
 > Tool names match **exactly and case-sensitively**. OpenClaw surfaces the shell
 > as `bash` / `exec` (lowercase) — write shell rules as `bash(curl *)` /
