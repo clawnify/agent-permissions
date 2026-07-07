@@ -55,12 +55,25 @@ describe("matchesRule", () => {
     assert.equal(matchesRule(rule("Bash(npm install)"), "Bash", "npm uninstall"), false);
   });
 
+  it("matches exact content with an escaped literal wildcard", () => {
+    const r = rule("Bash(echo \\*)");
+    assert.equal(matchesRule(r, "Bash", "echo *"), true);
+    assert.equal(matchesRule(r, "Bash", "echo value"), false);
+  });
+
   it("matches prefix legacy form", () => {
     const r = rule("Bash(git:*)");
     assert.equal(matchesRule(r, "Bash", "git"), true);
     assert.equal(matchesRule(r, "Bash", "git status"), true);
     assert.equal(matchesRule(r, "Bash", "git:foo"), true);
     assert.equal(matchesRule(r, "Bash", "github"), false);
+  });
+
+  it("matches prefix content with an escaped literal wildcard", () => {
+    const r = rule("Bash(file\\*:*)");
+    assert.equal(matchesRule(r, "Bash", "file*"), true);
+    assert.equal(matchesRule(r, "Bash", "file* status"), true);
+    assert.equal(matchesRule(r, "Bash", "fileABC"), false);
   });
 
   it("matches wildcard form", () => {

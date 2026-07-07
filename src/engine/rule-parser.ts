@@ -58,8 +58,7 @@ export function parseRuleString(ruleString: string): ParsedRule | null {
     return { toolName, content: { type: "any" } };
   }
 
-  const content = unescapeRuleContent(rawContent);
-  return { toolName, content: classifyContent(content) };
+  return { toolName, content: classifyContent(rawContent) };
 }
 
 /** Render a rule back to string form. Round-trip-safe with `parseRuleString`. */
@@ -82,20 +81,25 @@ export function serializeRule(rule: ParsedRule): string {
 // Content classification
 // ---------------------------------------------------------------------------
 
-function classifyContent(content: string): ContentMatcher {
+function classifyContent(rawContent: string): ContentMatcher {
+  const structurallyUnescaped = unescapeStructuralRuleContent(rawContent);
+
   // Legacy `:*` suffix → prefix match.
-  const prefixMatch = content.match(/^(.+):\*$/);
+  const prefixMatch = structurallyUnescaped.match(/^(.+):\*$/);
   if (prefixMatch) {
-    return { type: "prefix", value: prefixMatch[1]! };
+    return {
+      type: "prefix",
+      value: unescapeRuleContent(rawContent.slice(0, -2)),
+    };
   }
 
   // Any unescaped `*` → wildcard.
-  if (hasUnescapedWildcard(content)) {
-    return { type: "wildcard", pattern: content };
+  if (hasUnescapedWildcard(structurallyUnescaped)) {
+    return { type: "wildcard", pattern: structurallyUnescaped };
   }
 
   // Otherwise exact match.
-  return { type: "exact", value: content };
+  return { type: "exact", value: unescapeRuleContent(rawContent) };
 }
 
 /**
@@ -124,21 +128,27 @@ export function hasUnescapedWildcard(s: string): boolean {
 // ---------------------------------------------------------------------------
 //
 // Order matters in both directions:
-//   escape:    `\` → `\\` first, then `(` → `\(`, `)` → `\)`
-//   unescape:  `\(` → `(` first, `\)` → `)` first, then `\\` → `\`
+//   escape:    `\` → `\\` first, then `(` → `\(`, `)` → `\)`, `*` → `\*`
+//   unescape:  `\(` → `(` first, `\)` → `)` first, `\*` → `*`, then `\\` → `\`
 // Reversing the order would double-escape or eat backslashes.
 
 export function escapeRuleContent(content: string): string {
   return content
     .replace(/\\/g, "\\\\")
     .replace(/\(/g, "\\(")
-    .replace(/\)/g, "\\)");
+    .replace(/\)/g, "\\)")
+    .replace(/\*/g, "\\*");
+}
+
+function unescapeStructuralRuleContent(content: string): string {
+  return content
+    .replace(/\\\(/g, "(")
+    .replace(/\\\)/g, ")");
 }
 
 export function unescapeRuleContent(content: string): string {
-  return content
-    .replace(/\\\(/g, "(")
-    .replace(/\\\)/g, ")")
+  return unescapeStructuralRuleContent(content)
+    .replace(/\\\*/g, "*")
     .replace(/\\\\/g, "\\");
 }
 
