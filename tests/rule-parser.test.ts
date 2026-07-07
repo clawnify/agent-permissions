@@ -58,6 +58,20 @@ describe("parseRuleString", () => {
     });
   });
 
+  it("parses escaped literal wildcards as exact content", () => {
+    assert.deepEqual(parseRuleString("Bash(echo \\*)"), {
+      toolName: "Bash",
+      content: { type: "exact", value: "echo *" },
+    });
+  });
+
+  it("parses escaped literal wildcards inside prefix content", () => {
+    assert.deepEqual(parseRuleString("Bash(file\\*:*)"), {
+      toolName: "Bash",
+      content: { type: "prefix", value: "file*" },
+    });
+  });
+
   it("unescapes parentheses in content", () => {
     assert.deepEqual(parseRuleString('Bash(python -c "print\\(1\\)")'), {
       toolName: "Bash",
@@ -104,6 +118,18 @@ describe("serializeRule", () => {
     assert.equal(serializeRule(r), "Bash(git *)");
   });
 
+  it("round-trips exact content containing a literal wildcard", () => {
+    const r = parseRuleString("Bash(echo \\*)")!;
+    assert.equal(serializeRule(r), "Bash(echo \\*)");
+    assert.deepEqual(parseRuleString(serializeRule(r)), r);
+  });
+
+  it("round-trips prefix content containing a literal wildcard", () => {
+    const r = parseRuleString("Bash(file\\*:*)")!;
+    assert.equal(serializeRule(r), "Bash(file\\*:*)");
+    assert.deepEqual(parseRuleString(serializeRule(r)), r);
+  });
+
   it("round-trips a tool-wide rule", () => {
     const r = parseRuleString("Bash")!;
     assert.equal(serializeRule(r), "Bash");
@@ -146,6 +172,12 @@ describe("escapeRuleContent / unescapeRuleContent", () => {
   it("round-trips backslashes", () => {
     const s = 'echo "test\\nvalue"';
     assert.equal(unescapeRuleContent(escapeRuleContent(s)), s);
+  });
+
+  it("round-trips literal wildcards", () => {
+    const s = "echo *";
+    assert.equal(unescapeRuleContent(escapeRuleContent(s)), s);
+    assert.equal(escapeRuleContent(s), "echo \\*");
   });
 
   it("round-trips mixed", () => {
