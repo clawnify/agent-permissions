@@ -193,4 +193,42 @@ describe("evaluatePolicy", () => {
     assert.equal(decision.bucket, "allow");
     assert.equal(decision.matchedRule?.source, "session");
   });
+
+  it("allows listed TweetClaw paths before a tool-wide ask rule", () => {
+    const rules = makeRules({
+      allow: ["explore", "tweetclaw(/api/v1/x/tweets/search)", "tweetclaw(/api/v1/radar*)"],
+      ask: ["tweetclaw"],
+      deny: ["tweetclaw(/api/v1/x/accounts*)"],
+    });
+
+    const search = evaluatePolicy({
+      toolName: "tweetclaw",
+      ruleContent: "/api/v1/x/tweets/search",
+      rules,
+      defaultMode: "default",
+    });
+    const postTweet = evaluatePolicy({
+      toolName: "tweetclaw",
+      ruleContent: "/api/v1/x/tweets",
+      rules,
+      defaultMode: "default",
+    });
+    const accountAdmin = evaluatePolicy({
+      toolName: "tweetclaw",
+      ruleContent: "/api/v1/x/accounts/123",
+      rules,
+      defaultMode: "default",
+    });
+    const radar = evaluatePolicy({
+      toolName: "tweetclaw",
+      ruleContent: "/api/v1/radar/trends",
+      rules,
+      defaultMode: "default",
+    });
+
+    assert.equal(search.bucket, "allow");
+    assert.equal(postTweet.bucket, "ask");
+    assert.equal(accountAdmin.bucket, "deny");
+    assert.equal(radar.bucket, "allow");
+  });
 });

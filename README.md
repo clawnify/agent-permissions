@@ -161,6 +161,60 @@ chars), prefix legacy (`foo:*`), and exact matching all apply to the
 extracted content. Falls back to existing behavior (built-in extractor
 for shell tools, tool-wide otherwise) when no `paramKeys` entry exists.
 
+## Recipe: gate TweetClaw endpoint calls
+
+[TweetClaw](https://github.com/Xquik-dev/tweetclaw) is an OpenClaw plugin for
+X/Twitter automation: search tweets, search tweet replies, post tweets, post
+tweet replies, export followers, look up users, manage media, send direct
+messages, monitor tweets, deliver webhooks, and run giveaway draws through
+Xquik.
+
+TweetClaw ships a safe `explore` catalog tool and an optional `tweetclaw`
+endpoint invoker. If you install it beside `agent-permissions`, map the
+`tweetclaw` tool's `path` param into policy content. That lets operators
+allow public read endpoints while asking before write-like or account-backed
+flows.
+
+```bash
+openclaw plugins install @clawnify/agent-permissions --pin
+openclaw plugins install clawhub:@xquik/tweetclaw
+```
+
+Use `openclaw plugins install npm:@xquik/tweetclaw` only when the npm fallback
+is required.
+
+```jsonc
+"agent-permissions": {
+  "enabled": true,
+  "config": {
+    "paramKeys": {
+      "tweetclaw": "path"
+    },
+    "allow": [
+      "explore",
+      "tweetclaw(/api/v1/x/tweets/search)",
+      "tweetclaw(/api/v1/radar*)"
+    ],
+    "ask": [
+      "tweetclaw"
+    ],
+    "deny": [
+      "tweetclaw(/api/v1/x/accounts*)"
+    ]
+  }
+}
+```
+
+With this policy:
+
+- `explore` and public tweet search can proceed without an extra prompt.
+- Any other `tweetclaw` endpoint asks for in-chat approval before it runs.
+- Account connection and re-authentication paths stay blocked in the agent.
+- TweetClaw credentials remain in TweetClaw config or environment variables,
+  never in `agent-permissions` rules.
+
+Xquik is an independent third-party service. Not affiliated with X Corp. "Twitter" and "X" are trademarks of X Corp.
+
 ## Default modes
 
 - **`default`** (out of the box) — operator-opt-in: tools pass through unless an `ask` or `deny` rule explicitly matches. No surprises; you add rules for what you want gated.
