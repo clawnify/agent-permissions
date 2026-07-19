@@ -332,6 +332,19 @@ function register(api: PluginApi): void {
         // wins for a human who wrote a deny rule against it. Disable with
         // config.protectPermissions=false.
         if (event.toolName === "permissions_set" && protectPermissions) {
+          const denyDecision = evaluatePolicy({
+            toolName: event.toolName,
+            ruleContent: undefined,
+            rules: getRules(),
+            defaultMode,
+          });
+          if (denyDecision.bucket === "deny") {
+            return {
+              block: true,
+              blockReason: `${event.toolName} blocked by ${denyDecision.reason ?? "policy"}`,
+            };
+          }
+
           const p = params as {
             allow?: string[];
             deny?: string[];
