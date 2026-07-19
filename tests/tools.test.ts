@@ -34,6 +34,25 @@ async function out(r: ToolResult | Promise<ToolResult>) {
 }
 
 describe("permissions_set self-gate", () => {
+  it("honors an explicit deny rule before prompting", async () => {
+    const { hook } = makeApi({
+      defaultMode: "default",
+      deny: ["permissions_set"],
+      protectPermissions: true,
+      userRulesPath: tempRules(),
+    });
+    const res = (await hook({
+      toolName: "permissions_set",
+      params: { allow: ["bash(*)"] },
+      context: {},
+    })) as
+      | { block?: boolean; blockReason?: string; requireApproval?: unknown }
+      | undefined;
+    assert.equal(res?.block, true);
+    assert.match(res?.blockReason ?? "", /blocked by rule/);
+    assert.equal(res?.requireApproval, undefined);
+  });
+
   it("forces an approval on every call — even in bypassPermissions", async () => {
     const { hook } = makeApi({ defaultMode: "bypassPermissions", userRulesPath: tempRules() });
     const res = (await hook({ toolName: "permissions_set", params: { allow: ["bash(*)"] }, context: {} })) as
