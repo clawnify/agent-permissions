@@ -232,6 +232,41 @@ function buildGenericGateRequest(
 }
 
 // ---------------------------------------------------------------------------
+// Always-ask tools: no rule can pre-approve them and no approval is remembered.
+// ---------------------------------------------------------------------------
+//
+// A flow is code the agent writes for itself to run later — HTTP, exec and
+// agent steps — so authoring, publishing or deleting one is not a call a
+// person can allow once and forget. Until 0.6.0 this gate lived inside the
+// clawflow plugin (its own before_tool_call registered via registerHook),
+// which OpenClaw 2026.9.1 no longer dispatches; the authority owns it now, so
+// a box prompts the same on every OpenClaw version and there is one gate per
+// tool. Running a published flow (flow_run) is deliberately absent: schedules
+// and webhooks fire it unattended, and clawflow's own flow_run gate remains
+// the operator's opt-in for that.
+//
+// Deny rules still win (evaluated first in the hook); allow rules do not apply.
+
+const FLOW_DESCRIPTION =
+  "A flow is code the agent runs later, with HTTP, exec and agent steps. Approve once (not remembered); no rule can pre-approve this.";
+
+function flowName(params: Record<string, unknown>): string {
+  if (typeof params.flow === "string" && params.flow) return params.flow;
+  if (typeof params.file === "string" && params.file) return params.file;
+  return "inline flow";
+}
+
+const ALWAYS_ASK: Record<string, (params: Record<string, unknown>) => { title: string; description: string }> = {
+  flow_create: (p) => ({ title: `Create flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
+  flow_edit: (p) => ({ title: `Edit flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
+  flow_publish: (p) => ({ title: `Publish flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
+  flow_delete: (p) => ({ title: `Delete flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
+};
+
+/** Tools the authority always asks a person about, whatever the rules say. */
+export const ALWAYS_ASK_TOOLS: readonly string[] = Object.keys(ALWAYS_ASK);
+
+// ---------------------------------------------------------------------------
 // Plugin default export — openclaw's loader calls register(api).
 // ---------------------------------------------------------------------------
 
@@ -391,6 +426,24 @@ function register(api: PluginApi): void {
           return {
             block: true,
             blockReason: `${event.toolName} blocked by ${decision.reason ?? "policy"}`,
+          };
+        }
+
+        // Always-ask: past the deny check, before allow or ask can apply.
+        // Intentionally no onResolution persist path, and no
+        // skipSessionPatterns: an unattended session gets a timeout deny,
+        // never a silent publish.
+        const alwaysAsk = ALWAYS_ASK[event.toolName];
+        if (alwaysAsk) {
+          const m = alwaysAsk(params);
+          return {
+            requireApproval: {
+              title: clampChars(m.title, 80),
+              description: clampChars(m.description, 256),
+              severity: "warning",
+              timeoutMs: approvalTimeoutMs,
+              timeoutBehavior: "deny",
+            },
           };
         }
 
