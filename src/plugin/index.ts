@@ -256,11 +256,35 @@ function flowName(params: Record<string, unknown>): string {
   return "inline flow";
 }
 
-const ALWAYS_ASK: Record<string, (params: Record<string, unknown>) => { title: string; description: string }> = {
+const TRIGGER_DESCRIPTION =
+  "Changes an unattended schedule that runs a flow on a timer. Approve once (not remembered); no rule can pre-approve this.";
+
+/** flow_trigger is action-shaped (clawflow ≥ 1.6.0): every action that changes
+ *  or fires a schedule asks; `list` is a read and passes. */
+const TRIGGER_VERBS: Record<string, string> = {
+  create: "Schedule",
+  update: "Reschedule",
+  delete: "Unschedule",
+  pause: "Pause the schedule for",
+  resume: "Resume the schedule for",
+  run_now: "Run now",
+};
+
+/** Returns the prompt, or null when this particular call is a read. */
+type AlwaysAsk = (params: Record<string, unknown>) => { title: string; description: string } | null;
+
+const ALWAYS_ASK: Record<string, AlwaysAsk> = {
   flow_create: (p) => ({ title: `Create flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
   flow_edit: (p) => ({ title: `Edit flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
   flow_publish: (p) => ({ title: `Publish flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
   flow_delete: (p) => ({ title: `Delete flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
+  flow_trigger: (p) => {
+    const action = typeof p.action === "string" ? p.action : "";
+    const verb = TRIGGER_VERBS[action];
+    if (!verb) return null;
+    const target = typeof p.id === "string" && p.id ? p.id : flowName(p);
+    return { title: `${verb} flow "${target}"?`, description: TRIGGER_DESCRIPTION };
+  },
 };
 
 /** Tools the authority always asks a person about, whatever the rules say. */
@@ -433,9 +457,8 @@ function register(api: PluginApi): void {
         // Intentionally no onResolution persist path, and no
         // skipSessionPatterns: an unattended session gets a timeout deny,
         // never a silent publish.
-        const alwaysAsk = ALWAYS_ASK[event.toolName];
-        if (alwaysAsk) {
-          const m = alwaysAsk(params);
+        const m = ALWAYS_ASK[event.toolName]?.(params) ?? null;
+        if (m) {
           return {
             requireApproval: {
               title: clampChars(m.title, 80),
