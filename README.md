@@ -168,6 +168,22 @@ for shell tools, tool-wide otherwise) when no `paramKeys` entry exists.
 - **`bypassPermissions`** / **`dontAsk`** — allow everything except matching `deny` rules.
 - **`acceptEdits`** — currently behaves like `default`. Reserved for future tool-category-aware behavior (auto-allow edits within CWD).
 
+## Always-ask tools
+
+A few tools ask a person on every call, whatever the rules say: no `allow`
+rule pre-approves them, and the approval is never remembered. `deny` rules still
+win. Today that is flow authoring, `flow_create`, `flow_edit`, `flow_publish`
+and `flow_delete`: a flow is code the agent writes for itself to run later,
+with HTTP, exec and agent steps, so publishing one is not something to allow
+once and forget. Running a published flow (`flow_run`) is not in this set;
+schedules and webhooks fire it unattended, and the clawflow plugin's own
+`approval.enabled` gate is the operator's opt-in for that.
+
+Before 0.6.0 this gate lived inside the clawflow plugin, registered through
+`registerHook`, which OpenClaw 2026.9.1 no longer dispatches for
+`before_tool_call`. Holding it here means one gate per tool and the same prompt
+on every OpenClaw version.
+
 ## What it does NOT do
 
 - **Network calls.** Storage is local files. Consumers that want cloud sync
