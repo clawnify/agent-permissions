@@ -23,9 +23,30 @@ function makeHook(cfg: Record<string, unknown>) {
 }
 
 describe("always-ask tools", () => {
-  it("names exactly the flow-authoring tools; flow_run is the operator's opt-in elsewhere", () => {
-    assert.deepEqual([...ALWAYS_ASK_TOOLS].sort(), ["flow_create", "flow_delete", "flow_edit", "flow_publish"]);
+  it("names exactly the flow-authoring tools and the schedule tool; flow_run is the operator's opt-in elsewhere", () => {
+    assert.deepEqual([...ALWAYS_ASK_TOOLS].sort(), ["flow_create", "flow_delete", "flow_edit", "flow_publish", "flow_trigger"]);
     assert.ok(!ALWAYS_ASK_TOOLS.includes("flow_run"));
+  });
+
+  it("flow_trigger: every action that changes or fires a schedule asks; list is a read", async () => {
+    const hook = makeHook({ defaultMode: "bypassPermissions" });
+    for (const [action, verb] of [
+      ["create", "Schedule"],
+      ["update", "Reschedule"],
+      ["delete", "Unschedule"],
+      ["pause", "Pause the schedule for"],
+      ["resume", "Resume the schedule for"],
+      ["run_now", "Run now"],
+    ] as const) {
+      const res = await hook({ toolName: "flow_trigger", params: { action, id: "trg_1" }, context: {} });
+      assert.ok(res?.requireApproval, `flow_trigger ${action} must require approval`);
+      assert.equal(res!.requireApproval!.title, `${verb} flow "trg_1"?`);
+      assert.equal(res!.requireApproval!.onResolution, undefined);
+    }
+    const create = await hook({ toolName: "flow_trigger", params: { action: "create", flow: "digest" }, context: {} });
+    assert.equal(create!.requireApproval!.title, 'Schedule flow "digest"?');
+    assert.equal(await hook({ toolName: "flow_trigger", params: { action: "list" }, context: {} }), undefined);
+    assert.equal(await hook({ toolName: "flow_trigger", params: {}, context: {} }), undefined);
   });
 
   it("asks even in bypassPermissions, and the approval is never remembered", async () => {
