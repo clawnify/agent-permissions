@@ -9,6 +9,9 @@
 // matching what the gateway passes to register() at load time. Same
 // pattern used by other Clawnify-published plugins (e.g. clawflow).
 
+import { readdirSync } from "node:fs";
+import { basename, join } from "node:path";
+
 import { AGENT_PERMISSIONS_API_SYMBOL } from "../api/symbol.js";
 import type {
   AgentPermissionsApi,
@@ -88,6 +91,8 @@ interface ToolRegistration {
 
 interface PluginApi {
   pluginConfig?: unknown;
+  /** The gateway config; only `workspace` is read (where clawflow keeps flows). */
+  config?: { workspace?: unknown };
   logger: PluginLogger;
   on(
     event: "before_tool_call",
@@ -241,9 +246,15 @@ function buildGenericGateRequest(
 // clawflow plugin (its own before_tool_call registered via registerHook),
 // which OpenClaw 2026.9.1 no longer dispatches; the authority owns it now, so
 // a box prompts the same on every OpenClaw version and there is one gate per
-// tool. Running a published flow (flow_run) is deliberately absent: schedules
-// and webhooks fire it unattended, and clawflow's own flow_run gate remains
-// the operator's opt-in for that.
+// tool.
+//
+// flow_run asks only when it would run code nobody approved: an inline
+// definition, a draft, or a file with no published version (an agent can
+// write one with its file tools). Running a published version passes, since a
+// person approved that code at flow_publish; schedules and webhooks fire
+// those unattended. clawflow's own flow_run gate was meant to cover this, but
+// it is registered via registerHook too and has not fired since 2026.9.1, so
+// an inline flow's exec steps ran with no approval at all.
 //
 // Deny rules still win (evaluated first in the hook); allow rules do not apply.
 
@@ -254,6 +265,41 @@ function flowName(params: Record<string, unknown>): string {
   if (typeof params.flow === "string" && params.flow) return params.flow;
   if (typeof params.file === "string" && params.file) return params.file;
   return "inline flow";
+}
+
+/** Where clawflow keeps flows, resolved as clawflow resolves it (env, then the
+ *  gateway config, then the OpenClaw default). Set by register(). */
+let flowWorkspace: string | undefined;
+
+const FLOW_RUN_DESCRIPTION =
+  "Runs flow code no one approved, with HTTP, exec and agent steps. Published versions run without asking. Approve once (not remembered); no rule can pre-approve this.";
+
+/** Published version numbers of a flow, as clawflow lists them. */
+function publishedVersions(name: string): number[] {
+  if (!flowWorkspace) return [];
+  try {
+    return readdirSync(join(flowWorkspace, ".clawflow", "versions", name))
+      .filter((f) => /^\d+\.json$/.test(f))
+      .map((f) => parseInt(f, 10));
+  } catch {
+    return [];
+  }
+}
+
+/** What a flow_run would execute that no one approved, or null when it runs a
+ *  published version. Follows clawflow's flow_run: `file` wins over an inline
+ *  `flow`; `version` picks that published version; `draft` picks the file;
+ *  otherwise the latest published version runs, and the file only when there
+ *  is none. */
+function unapprovedFlowRun(p: Record<string, unknown>): string | null {
+  if (typeof p.file !== "string" || !p.file) return "an inline flow";
+  const name = basename(p.file, ".json");
+  if (p.draft === true) return `the draft of flow "${name}"`;
+  const published = publishedVersions(name);
+  if (typeof p.version === "number") {
+    return published.includes(p.version) ? null : `flow "${name}" v${p.version}, which is not published`;
+  }
+  return published.length > 0 ? null : `flow "${name}", which has no published version`;
 }
 
 const TRIGGER_DESCRIPTION =
@@ -278,6 +324,16 @@ const ALWAYS_ASK: Record<string, AlwaysAsk> = {
   flow_edit: (p) => ({ title: `Edit flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
   flow_publish: (p) => ({ title: `Publish flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
   flow_delete: (p) => ({ title: `Delete flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
+  flow_run: (p) => {
+    const what = unapprovedFlowRun(p);
+    return what ? { title: `Run ${what}?`, description: FLOW_RUN_DESCRIPTION } : null;
+  },
+  // rulespec gates its own emit through registerHook, which OpenClaw 2026.9.1
+  // and later never dispatch for before_tool_call, so the authority owns it.
+  rulespec_emit: () => ({
+    title: "Emit rulespec to SKILL.md?",
+    description: "Writes compiled SKILL.md files that every installed agent then follows. Approve once (not remembered); no rule can pre-approve this.",
+  }),
   flow_trigger: (p) => {
     const action = typeof p.action === "string" ? p.action : "";
     const verb = TRIGGER_VERBS[action];
@@ -296,6 +352,10 @@ export const ALWAYS_ASK_TOOLS: readonly string[] = Object.keys(ALWAYS_ASK);
 
 function register(api: PluginApi): void {
   const cfg = (api.pluginConfig ?? {}) as PluginConfig;
+  flowWorkspace =
+    process.env.OPENCLAW_WORKSPACE ??
+    (typeof api.config?.workspace === "string" ? api.config.workspace : undefined) ??
+    (process.env.HOME ? join(process.env.HOME, ".openclaw", "workspace") : undefined);
   const defaultMode: DefaultMode = cfg.defaultMode ?? "default";
   const approvalTimeoutMs = cfg.approvalTimeoutMs ?? 9 * 60 * 1000;
   const dangerousPatterns =
