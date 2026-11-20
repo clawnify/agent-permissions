@@ -118,10 +118,19 @@ export interface AuthorityAnswer {
  * first, and the call runs only on an explicit `allow`. No answer, an error,
  * a slow answer or an unknown bucket all prompt, so an authority can remove a
  * prompt and can never be the reason one is skipped by accident.
+ *
+ * An authority that could not decide (its policy service was unreachable, say)
+ * returns nothing instead of `ask`. The prompt then offers approve once and
+ * deny only: "always" is offered when the authority took the question, since
+ * it is the one that can remember the answer.
  */
 export type PermissionAuthority = (
   req: AuthorityRequest,
-) => Promise<AuthorityAnswer> | AuthorityAnswer;
+) =>
+  | Promise<AuthorityAnswer | null | undefined>
+  | AuthorityAnswer
+  | null
+  | undefined;
 
 export type AllowAlwaysListener = (
   event: AllowAlwaysEvent,

@@ -7,7 +7,7 @@ import plugin, { ALWAYS_ASK_TOOLS } from "../src/plugin/index.js";
 import { PERMISSION_AUTHORITY_SYMBOL } from "../src/api/symbol.js";
 import type { AuthorityRequest } from "../src/api/types.js";
 
-type Approval = { title: string; description: string; timeoutBehavior?: string; onResolution?: unknown };
+type Approval = { title: string; description: string; timeoutBehavior?: string; onResolution?: unknown; allowedDecisions?: string[] };
 type HookResult = { requireApproval?: Approval; block?: boolean; blockReason?: string } | undefined;
 type Hook = (event: unknown, ctx?: unknown) => Promise<HookResult>;
 
@@ -99,8 +99,9 @@ describe("always-ask tools", () => {
       assert.equal(res!.requireApproval!.timeoutBehavior, "deny");
       assert.equal(res!.requireApproval!.onResolution, undefined, "must not be persistable");
       assert.ok(res!.requireApproval!.description.length <= 256);
-      // With no permission authority nothing can pre-approve it, and the prompt says so.
+      // With no permission authority nothing can pre-approve it: the prompt says so and offers no "always".
       assert.match(res!.requireApproval!.description, /Approve once \(not remembered\); no rule can pre-approve this\.$/);
+      assert.deepEqual(res!.requireApproval!.allowedDecisions, ["allow-once", "deny"]);
     }
   });
 
@@ -243,11 +244,13 @@ describe("a permission authority", () => {
     const res = await makeHook({ defaultMode: "bypassPermissions" })(create);
     assert.equal(res?.requireApproval?.title, 'Create flow "digest"?');
     assert.match(res!.requireApproval!.description, /Asks every time until a rule allows it\.$/);
+    // Every answer is offered: the authority is the one that can remember an "always".
+    assert.equal(res!.requireApproval!.allowedDecisions, undefined);
     assert.equal(res!.requireApproval!.onResolution, undefined, "this plugin still remembers nothing");
     assert.equal(res!.requireApproval!.timeoutBehavior, "deny");
   });
 
-  it("prompts when the authority throws, rejects, answers nonsense or is not a function", async () => {
+  it("prompts when the authority throws, rejects, answers nothing or nonsense, or is not a function", async () => {
     const hook = makeHook({ defaultMode: "bypassPermissions" });
     for (const authority of [
       () => {
@@ -260,6 +263,7 @@ describe("a permission authority", () => {
       () => ({ bucket: "ALLOW" }),
       () => ({}),
       () => null,
+      async () => undefined,
       () => "allow",
       "allow",
       { bucket: "allow" },
@@ -268,6 +272,7 @@ describe("a permission authority", () => {
       const res = await hook(create);
       assert.ok(res?.requireApproval, `must ask: ${String(authority)}`);
       assert.match(res!.requireApproval!.description, NOT_REMEMBERED);
+      assert.deepEqual(res!.requireApproval!.allowedDecisions, ["allow-once", "deny"]);
       assert.notEqual(res?.block, true);
     }
   });

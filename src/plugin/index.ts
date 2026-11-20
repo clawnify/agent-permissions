@@ -80,8 +80,13 @@ interface RequireApprovalDecision {
   severity?: "info" | "warning" | "critical";
   timeoutMs?: number;
   timeoutBehavior?: "allow" | "deny";
+  /** The answers the prompt accepts; OpenClaw refuses any other. Absent: all three. */
+  allowedDecisions?: Array<"allow-once" | "allow-always" | "deny">;
   onResolution?: (decision: string) => Promise<void> | void;
 }
+
+/** For a prompt whose "always" would not be remembered: it is not offered. */
+const ONCE_OR_DENY: Array<"allow-once" | "deny"> = ["allow-once", "deny"];
 
 interface BeforeToolCallResult {
   block?: boolean;
@@ -426,21 +431,25 @@ async function askAuthority(
   const authority = (globalThis as Record<symbol, unknown>)[PERMISSION_AUTHORITY_SYMBOL];
   if (typeof authority !== "function") return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = Symbol("late");
   try {
     const answer = await Promise.race([
       Promise.resolve((authority as PermissionAuthority)(req)),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), AUTHORITY_TIMEOUT_MS);
+      new Promise<typeof late>((resolve) => {
+        timer = setTimeout(() => resolve(late), AUTHORITY_TIMEOUT_MS);
       }),
     ]);
-    if (!answer) {
+    if (answer === late) {
       logger.warn(
         `agent-permissions: no answer from the permission authority on ${req.kind}:${req.subject} in ${AUTHORITY_TIMEOUT_MS} ms; asking`,
       );
       return null;
     }
-    const bucket = (answer as AuthorityAnswer).bucket;
-    return bucket === "allow" || bucket === "deny" || bucket === "ask" ? answer : null;
+    // Nothing back is the authority saying it could not decide.
+    const bucket = (answer as AuthorityAnswer | null | undefined)?.bucket;
+    return bucket === "allow" || bucket === "deny" || bucket === "ask"
+      ? (answer as AuthorityAnswer)
+      : null;
   } catch (err) {
     logger.warn(
       `agent-permissions: the permission authority failed on ${req.kind}:${req.subject}; asking (${String(err)})`,
@@ -586,7 +595,8 @@ function register(api: PluginApi): void {
               severity: "warning",
               timeoutMs: approvalTimeoutMs,
               timeoutBehavior: "deny",
-              // Intentionally no onResolution persist path.
+              // Intentionally no onResolution persist path, so no "always".
+              allowedDecisions: ONCE_OR_DENY,
             },
           };
         }
@@ -663,6 +673,10 @@ function register(api: PluginApi): void {
               severity: "warning",
               timeoutMs: approvalTimeoutMs,
               timeoutBehavior: "deny",
+              // "Always" is offered only when an authority took the question:
+              // it is the one that can remember the answer. This plugin
+              // persists nothing here either way.
+              ...(answer ? {} : { allowedDecisions: ONCE_OR_DENY }),
             },
           };
         }
@@ -727,6 +741,8 @@ function register(api: PluginApi): void {
               severity: dangerous ? "critical" : "warning",
               timeoutMs: approvalTimeoutMs,
               timeoutBehavior: "deny",
+              // A dangerous rule is never persisted, so "always" is not offered.
+              ...(dangerous ? { allowedDecisions: ONCE_OR_DENY } : {}),
               onResolution: async (resolution: string) => {
                 if (resolution !== "allow-always") return;
                 if (dangerous) {
