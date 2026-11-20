@@ -170,19 +170,63 @@ for shell tools, tool-wide otherwise) when no `paramKeys` entry exists.
 
 ## Always-ask tools
 
-A few tools ask a person on every call, whatever the rules say: no `allow`
-rule pre-approves them, and the approval is never remembered. `deny` rules still
-win. Today that is flow authoring, `flow_create`, `flow_edit`, `flow_publish`
-and `flow_delete`: a flow is code the agent writes for itself to run later,
-with HTTP, exec and agent steps, so publishing one is not something to allow
-once and forget. Running a published flow (`flow_run`) is not in this set;
-schedules and webhooks fire it unattended, and the clawflow plugin's own
-`approval.enabled` gate is the operator's opt-in for that.
+A few tools ask a person on every call by default: no `allow` rule of this
+plugin pre-approves them, and this plugin never remembers an approval of one.
+`deny` rules still win.
+
+| Tool | Asks when | Filed under |
+|---|---|---|
+| `flow_create` | always | `flow` / `write` |
+| `flow_edit` | it writes a flow file (an edit of an inline definition, and `list`, change nothing and pass) | `flow` / `write` |
+| `flow_publish` | always | `flow` / `publish` |
+| `flow_delete` | always | `flow` / `delete` |
+| `flow_trigger` | the action changes or fires a schedule (`list` passes) | `flow` / `schedule` |
+| `flow_run` | it would run code no one approved: an inline flow, a draft, an unpublished version | `flow` / `run_unpublished` |
+| `rulespec_emit` | always | `rulespec` / `emit` |
+
+A flow is code the agent writes for itself to run later, with HTTP, exec and
+agent steps, so publishing one is not something to allow once and forget.
+Running a published flow is not in this set: schedules and webhooks fire it
+unattended, and a person approved that code when it was published.
 
 Before 0.6.0 this gate lived inside the clawflow plugin, registered through
 `registerHook`, which OpenClaw 2026.9.1 no longer dispatches for
 `before_tool_call`. Holding it here means one gate per tool and the same prompt
 on every OpenClaw version.
+
+### Letting a rule allow one (0.8.0)
+
+Asking is the default, and a deployment that keeps standing rules somewhere
+else can change it. Another plugin in the same gateway publishes a
+**permission authority**, one function, and this plugin asks it before it
+prompts:
+
+```ts
+import { PERMISSION_AUTHORITY_SYMBOL, type PermissionAuthority } from "@clawnify/agent-permissions";
+
+const authority: PermissionAuthority = async (req) => {
+  // req: { kind, subject, toolName, toolCallId, runId, sessionKey, title, description }
+  const allowed = await myPolicyStore.allows(req.kind, req.subject);
+  return { bucket: allowed ? "allow" : "ask" };
+};
+(globalThis as Record<symbol, unknown>)[PERMISSION_AUTHORITY_SYMBOL] = authority;
+```
+
+- `allow` runs the call with no prompt. `deny` blocks it. `ask` prompts.
+- No authority, an error, an answer that is not one of those three, or no
+  answer within 12 seconds all prompt. An authority can take a prompt away;
+  a failure in one never does.
+- An authority that could not decide returns nothing. That prompt, like one
+  with no authority at all, offers approve once and deny only
+  (`allowedDecisions`): "always" is offered when the authority took the
+  question, since it is the one that can remember the answer.
+- The symbol is read at each call, so load order does not matter, and
+  setting it to `undefined` withdraws the authority.
+- This plugin still makes no network call and stores nothing for these
+  tools. Where the rules live, and who may write them, is the authority's
+  business.
+- `permissions_set` is not put to the authority. An agent changing its own
+  rules asks every time.
 
 ## What it does NOT do
 

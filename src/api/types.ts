@@ -78,6 +78,60 @@ export interface AllowAlwaysEvent {
   sessionKey?: string;
 }
 
+/**
+ * What an always-ask call is filed under when a permission authority is asked
+ * about it: a namespace and an action, e.g. `flow` / `write`.
+ */
+export interface AuthorityRule {
+  kind: string;
+  subject: string;
+}
+
+/** One always-ask call, as put to a permission authority. */
+export interface AuthorityRequest extends AuthorityRule {
+  toolName: string;
+  toolCallId?: string;
+  runId?: string;
+  sessionKey?: string;
+  /** The prompt a person sees when the authority does not settle the call. */
+  title: string;
+  description: string;
+}
+
+export interface AuthorityAnswer {
+  /** `allow` runs the call, `deny` blocks it, `ask` prompts a person. */
+  bucket: PolicyBucket;
+  /** Why, in words for the agent. Used on a deny. */
+  reason?: string | null;
+  /** The rule that decided, if one did. Used on a deny. */
+  rule?: string | null;
+}
+
+/**
+ * A permission authority holds standing rules for the always-ask tools
+ * somewhere this plugin does not look, for example an organisation's policy
+ * service reached by another plugin in the same gateway. That plugin publishes
+ * one function on `globalThis[PERMISSION_AUTHORITY_SYMBOL]`; this plugin makes
+ * no network call of its own.
+ *
+ * Without one, an always-ask tool prompts on every call. With one, it is asked
+ * first, and the call runs only on an explicit `allow`. No answer, an error,
+ * a slow answer or an unknown bucket all prompt, so an authority can remove a
+ * prompt and can never be the reason one is skipped by accident.
+ *
+ * An authority that could not decide (its policy service was unreachable, say)
+ * returns nothing instead of `ask`. The prompt then offers approve once and
+ * deny only: "always" is offered when the authority took the question, since
+ * it is the one that can remember the answer.
+ */
+export type PermissionAuthority = (
+  req: AuthorityRequest,
+) =>
+  | Promise<AuthorityAnswer | null | undefined>
+  | AuthorityAnswer
+  | null
+  | undefined;
+
 export type AllowAlwaysListener = (
   event: AllowAlwaysEvent,
 ) => Promise<void> | void;

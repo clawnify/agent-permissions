@@ -12,12 +12,19 @@
 import { readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { AGENT_PERMISSIONS_API_SYMBOL } from "../api/symbol.js";
+import {
+  AGENT_PERMISSIONS_API_SYMBOL,
+  PERMISSION_AUTHORITY_SYMBOL,
+} from "../api/symbol.js";
 import type {
   AgentPermissionsApi,
   AllowAlwaysEvent,
   AllowAlwaysListener,
+  AuthorityAnswer,
+  AuthorityRequest,
+  AuthorityRule,
   GateRequest,
+  PermissionAuthority,
   PolicyBucket,
   ResolveFn,
   ResolverRegistration,
@@ -50,10 +57,20 @@ import {
 interface BeforeToolCallEvent {
   toolName: string;
   params?: unknown;
+  toolCallId?: string;
+  runId?: string;
   context?: {
     sessionKey?: string;
     [k: string]: unknown;
   };
+  [k: string]: unknown;
+}
+
+/** The hook's second argument: which run, session and call this is. */
+interface ToolCallContext {
+  sessionKey?: string;
+  runId?: string;
+  toolCallId?: string;
   [k: string]: unknown;
 }
 
@@ -103,6 +120,7 @@ interface PluginApi {
     event: "before_tool_call",
     handler: (
       event: BeforeToolCallEvent,
+      ctx?: ToolCallContext,
     ) =>
       | Promise<BeforeToolCallResult | undefined | void>
       | BeforeToolCallResult
@@ -242,11 +260,12 @@ function buildGenericGateRequest(
 }
 
 // ---------------------------------------------------------------------------
-// Always-ask tools: no rule can pre-approve them and no approval is remembered.
+// Always-ask tools: this plugin's own rules never pre-approve them, and it
+// remembers no approval of one.
 // ---------------------------------------------------------------------------
 //
-// A flow is code the agent writes for itself to run later — HTTP, exec and
-// agent steps — so authoring, publishing or deleting one is not a call a
+// A flow is code the agent writes for itself to run later (HTTP, exec and
+// agent steps), so authoring, publishing or deleting one is not a call a
 // person can allow once and forget. Until 0.6.0 this gate lived inside the
 // clawflow plugin (its own before_tool_call registered via registerHook),
 // which OpenClaw 2026.9.1 no longer dispatches; the authority owns it now, so
@@ -262,9 +281,17 @@ function buildGenericGateRequest(
 // an inline flow's exec steps ran with no approval at all.
 //
 // Deny rules still win (evaluated first in the hook); allow rules do not apply.
+//
+// Asking is the default, and since 0.8.0 a permission authority can change it:
+// each entry names the rule it is filed under, the authority (when another
+// plugin has published one, see PermissionAuthority) is asked first, and an
+// explicit allow runs the call. Every other answer prompts.
+
+const NOT_REMEMBERED = " Approve once (not remembered); no rule can pre-approve this.";
+const UNTIL_ALLOWED = " Asks every time until a rule allows it.";
 
 const FLOW_DESCRIPTION =
-  "A flow is code the agent runs later, with HTTP, exec and agent steps. Approve once (not remembered); no rule can pre-approve this.";
+  "A flow is code the agent runs later, with HTTP, exec and agent steps.";
 
 function flowName(params: Record<string, unknown>): string {
   if (typeof params.flow === "string" && params.flow) return params.flow;
@@ -277,7 +304,7 @@ function flowName(params: Record<string, unknown>): string {
 let flowWorkspace: string | undefined;
 
 const FLOW_RUN_DESCRIPTION =
-  "Runs flow code no one approved, with HTTP, exec and agent steps. Published versions run without asking. Approve once (not remembered); no rule can pre-approve this.";
+  "Runs flow code no one approved, with HTTP, exec and agent steps. Published versions run without asking.";
 
 /** Published version numbers of a flow, as clawflow lists them. */
 function publishedVersions(name: string): number[] {
@@ -308,7 +335,7 @@ function unapprovedFlowRun(p: Record<string, unknown>): string | null {
 }
 
 const TRIGGER_DESCRIPTION =
-  "Changes an unattended schedule that runs a flow on a timer. Approve once (not remembered); no rule can pre-approve this.";
+  "Changes an unattended schedule that runs a flow on a timer.";
 
 /** flow_trigger is action-shaped (clawflow ≥ 1.6.0): every action that changes
  *  or fires a schedule asks; `list` is a read and passes. */
@@ -321,35 +348,117 @@ const TRIGGER_VERBS: Record<string, string> = {
   run_now: "Run now",
 };
 
-/** Returns the prompt, or null when this particular call is a read. */
-type AlwaysAsk = (params: Record<string, unknown>) => { title: string; description: string } | null;
+/** The prompt and the rule the call is filed under, or null when this
+ *  particular call changes nothing and so needs no one's approval. */
+type AlwaysAsk = (
+  params: Record<string, unknown>,
+) => { title: string; description: string; rule: AuthorityRule } | null;
 
 const ALWAYS_ASK: Record<string, AlwaysAsk> = {
-  flow_create: (p) => ({ title: `Create flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
-  flow_edit: (p) => ({ title: `Edit flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
-  flow_publish: (p) => ({ title: `Publish flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
-  flow_delete: (p) => ({ title: `Delete flow "${flowName(p)}"?`, description: FLOW_DESCRIPTION }),
+  flow_create: (p) => ({
+    title: `Create flow "${flowName(p)}"?`,
+    description: FLOW_DESCRIPTION,
+    rule: { kind: "flow", subject: "write" },
+  }),
+  // flow_edit works on a file or on an inline definition (clawflow reads
+  // `file` first). Only the file form writes anything: an inline edit returns
+  // the changed definition and leaves the box as it was, and `list` reads. So
+  // those two pass; the definition asks later, when flow_create saves it or
+  // flow_run runs it.
+  flow_edit: (p) => {
+    if (typeof p.file !== "string" || !p.file || p.action === "list") return null;
+    return {
+      title: `Edit flow "${p.file}"?`,
+      description: FLOW_DESCRIPTION,
+      rule: { kind: "flow", subject: "write" },
+    };
+  },
+  flow_publish: (p) => ({
+    title: `Publish flow "${flowName(p)}"?`,
+    description: FLOW_DESCRIPTION,
+    rule: { kind: "flow", subject: "publish" },
+  }),
+  flow_delete: (p) => ({
+    title: `Delete flow "${flowName(p)}"?`,
+    description: FLOW_DESCRIPTION,
+    rule: { kind: "flow", subject: "delete" },
+  }),
   flow_run: (p) => {
     const what = unapprovedFlowRun(p);
-    return what ? { title: `Run ${what}?`, description: FLOW_RUN_DESCRIPTION } : null;
+    return what
+      ? {
+          title: `Run ${what}?`,
+          description: FLOW_RUN_DESCRIPTION,
+          rule: { kind: "flow", subject: "run_unpublished" },
+        }
+      : null;
   },
   // rulespec gates its own emit through registerHook, which OpenClaw 2026.9.1
   // and later never dispatch for before_tool_call, so the authority owns it.
   rulespec_emit: () => ({
     title: "Emit rulespec to SKILL.md?",
-    description: "Writes compiled SKILL.md files that every installed agent then follows. Approve once (not remembered); no rule can pre-approve this.",
+    description: "Writes compiled SKILL.md files that every installed agent then follows.",
+    rule: { kind: "rulespec", subject: "emit" },
   }),
   flow_trigger: (p) => {
     const action = typeof p.action === "string" ? p.action : "";
     const verb = TRIGGER_VERBS[action];
     if (!verb) return null;
     const target = typeof p.id === "string" && p.id ? p.id : flowName(p);
-    return { title: `${verb} flow "${target}"?`, description: TRIGGER_DESCRIPTION };
+    return {
+      title: `${verb} flow "${target}"?`,
+      description: TRIGGER_DESCRIPTION,
+      rule: { kind: "flow", subject: "schedule" },
+    };
   },
 };
 
-/** Tools the authority always asks a person about, whatever the rules say. */
+/** Tools the authority asks a person about by default, whatever its own rules say. */
 export const ALWAYS_ASK_TOOLS: readonly string[] = Object.keys(ALWAYS_ASK);
+
+// OpenClaw gives a before_tool_call handler 15 s and refuses the call past
+// that, where this gate would have asked. So an authority that has not
+// answered by then is treated as having no answer.
+const AUTHORITY_TIMEOUT_MS = 12_000;
+
+/** The published authority's answer on one always-ask call, or null when there
+ *  is nothing to act on: no authority, an error, a slow or malformed answer.
+ *  Null prompts, so no failure here can let a call through. */
+async function askAuthority(
+  req: AuthorityRequest,
+  logger: PluginLogger,
+): Promise<AuthorityAnswer | null> {
+  const authority = (globalThis as Record<symbol, unknown>)[PERMISSION_AUTHORITY_SYMBOL];
+  if (typeof authority !== "function") return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = Symbol("late");
+  try {
+    const answer = await Promise.race([
+      Promise.resolve((authority as PermissionAuthority)(req)),
+      new Promise<typeof late>((resolve) => {
+        timer = setTimeout(() => resolve(late), AUTHORITY_TIMEOUT_MS);
+      }),
+    ]);
+    if (answer === late) {
+      logger.warn(
+        `agent-permissions: no answer from the permission authority on ${req.kind}:${req.subject} in ${AUTHORITY_TIMEOUT_MS} ms; asking`,
+      );
+      return null;
+    }
+    // Nothing back is the authority saying it could not decide.
+    const bucket = (answer as AuthorityAnswer | null | undefined)?.bucket;
+    return bucket === "allow" || bucket === "deny" || bucket === "ask"
+      ? (answer as AuthorityAnswer)
+      : null;
+  } catch (err) {
+    logger.warn(
+      `agent-permissions: the permission authority failed on ${req.kind}:${req.subject}; asking (${String(err)})`,
+    );
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Plugin default export — openclaw's loader calls register(api).
@@ -443,7 +552,10 @@ function register(api: PluginApi): void {
 
   api.on(
     "before_tool_call",
-    async (event: BeforeToolCallEvent): Promise<BeforeToolCallResult | undefined> => {
+    async (
+      event: BeforeToolCallEvent,
+      ctx?: ToolCallContext,
+    ): Promise<BeforeToolCallResult | undefined> => {
       try {
         usage.set(event.toolName, (usage.get(event.toolName) ?? 0) + 1);
         const params = (event.params as Record<string, unknown>) ?? {};
@@ -525,13 +637,46 @@ function register(api: PluginApi): void {
         // never a silent publish.
         const m = ALWAYS_ASK[event.toolName]?.(params) ?? null;
         if (m) {
+          // A permission authority, when one is published, may hold a rule
+          // for this action. Only its explicit allow skips the prompt.
+          const answer = await askAuthority(
+            {
+              ...m.rule,
+              toolName: event.toolName,
+              toolCallId: event.toolCallId ?? ctx?.toolCallId,
+              runId: event.runId ?? ctx?.runId,
+              sessionKey: ctx?.sessionKey ?? event.context?.sessionKey,
+              title: m.title,
+              description: m.description,
+            },
+            api.logger,
+          );
+          if (answer?.bucket === "allow") return undefined;
+          if (answer?.bucket === "deny") {
+            const what = `${m.rule.kind}:${m.rule.subject}`;
+            return {
+              block: true,
+              blockReason: answer.reason
+                ? `${what} was stopped. ${answer.reason}`
+                : `${what} blocked by ${answer.rule ? `rule '${answer.rule}'` : "policy"}`,
+            };
+          }
           return {
             requireApproval: {
               title: clampChars(m.title, 80),
-              description: clampChars(m.description, 256),
+              // What the person is told matches what can happen: with an
+              // authority a rule can allow this, without one nothing can.
+              description: clampChars(
+                m.description + (answer ? UNTIL_ALLOWED : NOT_REMEMBERED),
+                256,
+              ),
               severity: "warning",
               timeoutMs: approvalTimeoutMs,
               timeoutBehavior: "deny",
+              // "Always" is offered only when an authority took the question:
+              // it is the one that can remember the answer. This plugin
+              // persists nothing here either way.
+              ...(answer ? {} : { allowedDecisions: ONCE_OR_DENY }),
             },
           };
         }
