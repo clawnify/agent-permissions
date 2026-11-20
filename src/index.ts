@@ -13,12 +13,18 @@ export {
   getAgentPermissionsApi,
 } from "./api/resolver.js";
 
+export { PERMISSION_AUTHORITY_SYMBOL } from "./api/symbol.js";
+
 export type {
   AgentPermissionsApi,
   ResolverRegistration,
   ResolveFn,
   GateRequest,
   AllowAlwaysEvent,
+  AuthorityAnswer,
+  AuthorityRequest,
+  AuthorityRule,
+  PermissionAuthority,
   PolicyBucket,
   PolicyDecision,
   RuleSource,
