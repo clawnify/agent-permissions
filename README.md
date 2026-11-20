@@ -244,9 +244,12 @@ art).
 ## Dangerous patterns
 
 `dangerousPatterns` config (defaults built in) lists prefixes that may match
-`ask` rules but can **never** be allow-always-persisted, even if the user
-clicks "allow always." Reason: granting `Bash(python:*)` = arbitrary code
-execution, which defeats the gate entirely.
+`ask` rules but can **never** be allow-always-persisted. Reason: granting
+`Bash(python:*)` = arbitrary code execution, which defeats the gate entirely.
+Since 0.7.1 such a prompt does not offer "always" at all: it names
+`allowedDecisions: ["allow-once", "deny"]`, so a client that shows the answers
+OpenClaw sends has no button for it, and OpenClaw refuses it from one that
+does not.
 
 Default list (conservative):
 
@@ -318,7 +321,8 @@ intercept. Two tools (v0.5.0):
   not replace). Defaults to **user scope** (`~/.openclaw/permissions.json`).
 
 `permissions_set` is **self-gated**: when `protectPermissions` is on (the
-default) every call forces an approval and can never be allow-always-persisted,
+default) every call forces an approval and can never be allow-always-persisted
+(the prompt offers approve once and deny only),
 so an agent can only *request* a permission change — a human approves the diff.
 Set `protectPermissions: false` to opt out (it then follows normal policy).
 
