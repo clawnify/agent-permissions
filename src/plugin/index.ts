@@ -63,8 +63,13 @@ interface RequireApprovalDecision {
   severity?: "info" | "warning" | "critical";
   timeoutMs?: number;
   timeoutBehavior?: "allow" | "deny";
+  /** The answers the prompt accepts; OpenClaw refuses any other. Absent: all three. */
+  allowedDecisions?: Array<"allow-once" | "allow-always" | "deny">;
   onResolution?: (decision: string) => Promise<void> | void;
 }
+
+/** For a prompt whose "always" would not be remembered: it is not offered. */
+const ONCE_OR_DENY: Array<"allow-once" | "deny"> = ["allow-once", "deny"];
 
 interface BeforeToolCallResult {
   block?: boolean;
@@ -478,7 +483,8 @@ function register(api: PluginApi): void {
               severity: "warning",
               timeoutMs: approvalTimeoutMs,
               timeoutBehavior: "deny",
-              // Intentionally no onResolution persist path.
+              // Intentionally no onResolution persist path, so no "always".
+              allowedDecisions: ONCE_OR_DENY,
             },
           };
         }
@@ -590,6 +596,8 @@ function register(api: PluginApi): void {
               severity: dangerous ? "critical" : "warning",
               timeoutMs: approvalTimeoutMs,
               timeoutBehavior: "deny",
+              // A dangerous rule is never persisted, so "always" is not offered.
+              ...(dangerous ? { allowedDecisions: ONCE_OR_DENY } : {}),
               onResolution: async (resolution: string) => {
                 if (resolution !== "allow-always") return;
                 if (dangerous) {

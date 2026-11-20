@@ -37,13 +37,15 @@ describe("permissions_set self-gate", () => {
   it("forces an approval on every call — even in bypassPermissions", async () => {
     const { hook } = makeApi({ defaultMode: "bypassPermissions", userRulesPath: tempRules() });
     const res = (await hook({ toolName: "permissions_set", params: { allow: ["bash(*)"] }, context: {} })) as
-      | { requireApproval?: { title: string; description: string; onResolution?: unknown } }
+      | { requireApproval?: { title: string; description: string; onResolution?: unknown; allowedDecisions?: string[] } }
       | undefined;
     assert.ok(res?.requireApproval, "expected requireApproval");
     assert.ok(res!.requireApproval!.title.length <= 80);
     assert.ok(res!.requireApproval!.description.length <= 256);
     // never persistable — one approval must not open the door forever
     assert.equal(res!.requireApproval!.onResolution, undefined);
+    // so the prompt does not offer an "always" it would not keep
+    assert.deepEqual(res!.requireApproval!.allowedDecisions, ["allow-once", "deny"]);
   });
 
   it("is NOT force-gated when protectPermissions is false", async () => {
@@ -90,6 +92,32 @@ describe("permissions_set merge semantics", () => {
       context: {},
     })) as { requireApproval?: unknown } | undefined;
     assert.ok(gate?.requireApproval, "newly-added ask rule should gate the curl call");
+  });
+});
+
+describe("answers a prompt accepts", () => {
+  type Gate = { requireApproval?: { description: string; allowedDecisions?: string[]; onResolution?: (d: string) => unknown } } | undefined;
+
+  it("an ask rule on the dangerous list accepts no 'always': it would not be persisted", async () => {
+    const file = tempRules();
+    const { tools, hook } = makeApi({ defaultMode: "default", userRulesPath: file });
+    await tools.permissions_set.execute("1", { ask: ["bash(python *)"] });
+    const gate = (await hook({ toolName: "bash", params: { command: "python x.py" }, context: {} })) as Gate;
+    assert.ok(gate?.requireApproval, "expected requireApproval");
+    assert.match(gate!.requireApproval!.description, /allow-always is disabled/);
+    assert.deepEqual(gate!.requireApproval!.allowedDecisions, ["allow-once", "deny"]);
+  });
+
+  it("an ordinary ask rule accepts every answer, and 'always' is persisted", async () => {
+    const file = tempRules();
+    const { tools, hook } = makeApi({ defaultMode: "default", userRulesPath: file });
+    await tools.permissions_set.execute("1", { ask: ["bash(git *)"] });
+    const gate = (await hook({ toolName: "bash", params: { command: "git status" }, context: {} })) as Gate;
+    assert.ok(gate?.requireApproval, "expected requireApproval");
+    // No list: OpenClaw offers allow-once, allow-always and deny.
+    assert.equal(gate!.requireApproval!.allowedDecisions, undefined);
+    await gate!.requireApproval!.onResolution!("allow-always");
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).permissions.allow, ["bash(git *)"]);
   });
 });
 
